@@ -5,6 +5,5 @@
         <item name="android:statusBarColor">#080b12</item>
         <item name="android:navigationBarColor">#080b12</item>
         <item name="android:windowFullscreen">true</item>
-        <item name="android:windowKeepScreenOn">true</item>
     </style>
 </resources>
