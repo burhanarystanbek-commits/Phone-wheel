@@ -309,7 +309,7 @@ class MainActivity : Activity(), SensorEventListener {
             // естественные portrait-оси повёрнуты на 90°: наклон влево-вправо
             // в landscape-хвате соответствует оси pitch (X), а не roll (Y) —
             // roll в этом хвате реагирует на наклон вперёд-назад, отсюда и баг.
-            rollDeg = orientation[1] * 180f / PI.toFloat()
+            rollDeg = -orientation[1] * 180f / PI.toFloat()
             val raw = (rollDeg - centerRoll) / maxSteerAngle
             steer = raw.coerceIn(-1f, 1f).let { if (abs(it) < 0.015f) 0f else it }
         }
