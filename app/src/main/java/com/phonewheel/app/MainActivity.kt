@@ -29,18 +29,22 @@ class PedalView(context: Context, private val isGas: Boolean) : View(context) {
     private val colorGrad = if (isGas) Color.parseColor("#16a85a") else Color.parseColor("#c03030")
     private val label     = if (isGas) "GAS" else "BRAKE"
 
-    private val paintBg    = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val paintFill  = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val paintText  = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val paintThumb = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val paintGlow  = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paintBg     = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paintBorder = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paintFill   = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paintText   = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paintThumb  = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paintGlow   = Paint(Paint.ANTI_ALIAS_FLAG)
 
     private var gradient: LinearGradient? = null
 
     init {
-        paintText.typeface  = Typeface.DEFAULT_BOLD
-        paintText.textAlign = Paint.Align.CENTER
-        paintGlow.maskFilter = BlurMaskFilter(40f, BlurMaskFilter.Blur.NORMAL)
+        paintText.typeface   = Typeface.DEFAULT_BOLD
+        paintText.textAlign  = Paint.Align.CENTER
+        paintGlow.maskFilter = BlurMaskFilter(44f, BlurMaskFilter.Blur.NORMAL)
+        paintBorder.style       = Paint.Style.STROKE
+        paintBorder.strokeWidth = 2.5f
+        paintBorder.color       = Color.argb(40, 255, 255, 255)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldW: Int, oldH: Int) {
@@ -58,8 +62,8 @@ class PedalView(context: Context, private val isGas: Boolean) : View(context) {
         val w  = width.toFloat()
         val h  = height.toFloat()
         val cx = w / 2f
-        val padH = dp(50f)
-        val padW = dp(14f)
+        val padH = dp(52f)
+        val padW = dp(16f)
 
         val trackLeft   = cx - padW
         val trackRight  = cx + padW
@@ -67,46 +71,62 @@ class PedalView(context: Context, private val isGas: Boolean) : View(context) {
         val trackBottom = h - padH
         val trackH      = trackBottom - trackTop
 
-        // card bg
-        paintBg.color = Color.parseColor("#10141f")
-        canvas.drawRoundRect(RectF(0f, 0f, w, h), dp(18f), dp(18f), paintBg)
+        // card bg — лёгкий вертикальный градиент вместо плоского цвета
+        val cardGrad = LinearGradient(0f, 0f, 0f, h,
+            Color.parseColor("#141927"), Color.parseColor("#0d1119"), Shader.TileMode.CLAMP)
+        paintBg.shader = cardGrad
+        canvas.drawRoundRect(RectF(0f, 0f, w, h), dp(20f), dp(20f), paintBg)
+        paintBg.shader = null
+
+        // тонкая обводка карточки, чуть ярче когда активна
+        paintBorder.color = if (value > 0)
+            Color.argb(70, Color.red(colorMain), Color.green(colorMain), Color.blue(colorMain))
+        else Color.argb(28, 255, 255, 255)
+        canvas.drawRoundRect(RectF(1.5f, 1.5f, w - 1.5f, h - 1.5f), dp(20f), dp(20f), paintBorder)
 
         // glow
         if (value > 0) {
             paintGlow.color = Color.argb(
-                (value * 1.2f).toInt().coerceIn(0, 70),
+                (value * 1.1f).toInt().coerceIn(0, 80),
                 Color.red(colorMain), Color.green(colorMain), Color.blue(colorMain)
             )
-            canvas.drawCircle(cx, trackBottom, padW * 2f, paintGlow)
+            canvas.drawCircle(cx, trackBottom, padW * 2.2f, paintGlow)
         }
 
         // track bg
         paintBg.color = colorDark
-        canvas.drawRoundRect(RectF(trackLeft, trackTop, trackRight, trackBottom), dp(10f), dp(10f), paintBg)
+        canvas.drawRoundRect(RectF(trackLeft, trackTop, trackRight, trackBottom), dp(12f), dp(12f), paintBg)
 
         // fill
         val fillH = trackH * value / 100f
         if (fillH > 2f) {
             canvas.drawRoundRect(
                 RectF(trackLeft, trackBottom - fillH, trackRight, trackBottom),
-                dp(10f), dp(10f), paintFill
+                dp(12f), dp(12f), paintFill
             )
         }
 
-        // thumb
-        val thumbY = (trackBottom - fillH).coerceIn(trackTop + dp(12f), trackBottom - dp(12f))
-        paintThumb.color = Color.argb(if (value > 0) 150 else 50, 255, 255, 255)
-        canvas.drawCircle(cx, thumbY, dp(12f), paintThumb)
+        // thumb с тонким контрастным кольцом
+        val thumbY = (trackBottom - fillH).coerceIn(trackTop + dp(13f), trackBottom - dp(13f))
+        paintThumb.style = Paint.Style.FILL
+        paintThumb.color = Color.argb(if (value > 0) 220 else 70, 255, 255, 255)
+        canvas.drawCircle(cx, thumbY, dp(8.5f), paintThumb)
+        paintThumb.style = Paint.Style.STROKE
+        paintThumb.strokeWidth = dp(2f)
+        paintThumb.color = if (value > 0) colorMain else Color.argb(60, 255, 255, 255)
+        canvas.drawCircle(cx, thumbY, dp(12.5f), paintThumb)
 
         // label top
-        paintText.textSize = dp(11f)
+        paintText.textSize = dp(11.5f)
+        paintText.letterSpacing = 0.12f
         paintText.color = if (value > 0) colorMain else Color.parseColor("#6b7394")
-        canvas.drawText(label, cx, padH - dp(6f), paintText)
+        canvas.drawText(label, cx, padH - dp(8f), paintText)
+        paintText.letterSpacing = 0f
 
         // value bottom
-        paintText.textSize = dp(20f)
-        paintText.color = colorMain
-        canvas.drawText("$value", cx, h - dp(6f), paintText)
+        paintText.textSize = dp(22f)
+        paintText.color = if (value > 0) colorMain else Color.parseColor("#8b93b0")
+        canvas.drawText("$value", cx, h - dp(8f), paintText)
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -147,9 +167,16 @@ class WheelView(context: Context) : View(context) {
     private val paintRing  = Paint(Paint.ANTI_ALIAS_FLAG)
     private val paintSpoke = Paint(Paint.ANTI_ALIAS_FLAG)
     private val paintHub   = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paintHubRing = Paint(Paint.ANTI_ALIAS_FLAG)
     private val paintText  = Paint(Paint.ANTI_ALIAS_FLAG)
     private val paintArc   = Paint(Paint.ANTI_ALIAS_FLAG)
     private val paintPedal = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paintGlow  = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    init {
+        paintGlow.maskFilter = BlurMaskFilter(36f, BlurMaskFilter.Blur.NORMAL)
+        paintHubRing.style = Paint.Style.STROKE
+    }
 
     private fun dp(v: Float) = v * resources.displayMetrics.density
 
@@ -159,6 +186,14 @@ class WheelView(context: Context) : View(context) {
         val cx = w / 2f
         val cy = h / 2f
         val r  = minOf(w, h) * 0.36f
+
+        // мягкое свечение под кольцом при активном повороте
+        if (abs(steer) > 0.02f) {
+            paintGlow.color = Color.argb(
+                (abs(steer) * 90).toInt().coerceIn(0, 90), 124, 111, 255
+            )
+            canvas.drawCircle(cx, cy, r * 1.12f, paintGlow)
+        }
 
         // outer ring
         paintRing.style       = Paint.Style.STROKE
@@ -170,8 +205,9 @@ class WheelView(context: Context) : View(context) {
         if (abs(steer) > 0.01f) {
             paintArc.style       = Paint.Style.STROKE
             paintArc.strokeWidth = r * 0.18f
-            val alpha = (80 + abs(steer) * 170).toInt().coerceIn(0, 255)
-            paintArc.color = Color.argb(alpha, 124, 111, 255)
+            paintArc.strokeCap   = Paint.Cap.ROUND
+            val alpha = (90 + abs(steer) * 165).toInt().coerceIn(0, 255)
+            paintArc.color = Color.argb(alpha, 138, 125, 255)
             val oval = RectF(cx - r, cy - r, cx + r, cy + r)
             val sweepDeg = steer * 144f
             if (sweepDeg >= 0) canvas.drawArc(oval, -90f, sweepDeg, false, paintArc)
@@ -185,18 +221,23 @@ class WheelView(context: Context) : View(context) {
         paintSpoke.style       = Paint.Style.STROKE
         paintSpoke.strokeWidth = r * 0.042f
         paintSpoke.strokeCap   = Paint.Cap.ROUND
-        paintSpoke.color       = Color.parseColor("#7c6fff")
+        paintSpoke.color       = Color.parseColor("#8a7eff")
         canvas.drawLine(-r * 0.78f, 0f, r * 0.78f, 0f, paintSpoke)
         canvas.drawLine(0f, 0f, 0f, r * 0.70f, paintSpoke)
         canvas.restore()
 
-        // hub
+        // hub — лёгкий радиальный градиент вместо плоской заливки
         paintHub.style = Paint.Style.FILL
-        paintHub.color = Color.parseColor("#1a1f32")
+        paintHub.shader = RadialGradient(cx, cy - r * 0.06f, r * 0.30f,
+            Color.parseColor("#232a45"), Color.parseColor("#171c2e"), Shader.TileMode.CLAMP)
         canvas.drawCircle(cx, cy, r * 0.27f, paintHub)
+        paintHub.shader = null
+        paintHubRing.strokeWidth = dp(1.5f)
+        paintHubRing.color = Color.argb(50, 255, 255, 255)
+        canvas.drawCircle(cx, cy, r * 0.27f, paintHubRing)
 
         // steer text
-        paintText.color     = Color.parseColor("#7c6fff")
+        paintText.color     = Color.parseColor("#8a7eff")
         paintText.textSize  = r * 0.20f
         paintText.typeface  = Typeface.DEFAULT_BOLD
         paintText.textAlign = Paint.Align.CENTER
@@ -233,8 +274,9 @@ class MainActivity : Activity(), SensorEventListener {
 
     private lateinit var sensorManager: SensorManager
     private var rotSensor: Sensor? = null
-    private val rotMatrix   = FloatArray(9)
-    private val orientation = FloatArray(3)
+    private val rotMatrix      = FloatArray(9)
+    private val remappedMatrix = FloatArray(9)
+    private val orientation    = FloatArray(3)
 
     private var rollDeg       = 0f
     private var centerRoll    = 0f
@@ -252,6 +294,7 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var brakeView:     PedalView
     private lateinit var wheelView:     WheelView
     private lateinit var statusText:    TextView
+    private lateinit var statusDot:     View
     private lateinit var connectBtn:    Button
     private lateinit var ipInput:       EditText
     private lateinit var steerTv:       TextView
@@ -292,8 +335,28 @@ class MainActivity : Activity(), SensorEventListener {
         if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR ||
             event.sensor.type == Sensor.TYPE_GAME_ROTATION_VECTOR) {
             SensorManager.getRotationMatrixFromVector(rotMatrix, event.values)
-            SensorManager.getOrientation(rotMatrix, orientation)
-            rollDeg = orientation[2] * 180f / PI.toFloat()
+
+            // Переотображаем систему координат датчика под реальный физический
+            // поворот экрана. Телефон в landscape можно держать двумя способами
+            // (повёрнут на 90° влево или вправо от portrait) — Surface.getRotation()
+            // говорит, какой именно, чтобы руление работало одинаково в обоих случаях.
+            @Suppress("DEPRECATION")
+            val rotation = windowManager.defaultDisplay.rotation
+            when (rotation) {
+                Surface.ROTATION_90 ->
+                    SensorManager.remapCoordinateSystem(
+                        rotMatrix, SensorManager.AXIS_Y, SensorManager.AXIS_MINUS_X, remappedMatrix)
+                Surface.ROTATION_270 ->
+                    SensorManager.remapCoordinateSystem(
+                        rotMatrix, SensorManager.AXIS_MINUS_Y, SensorManager.AXIS_X, remappedMatrix)
+                else ->
+                    System.arraycopy(rotMatrix, 0, remappedMatrix, 0, rotMatrix.size)
+            }
+
+            SensorManager.getOrientation(remappedMatrix, orientation)
+            // После remap-а в landscape руление как "наклон руля" — это уже pitch (orientation[1]),
+            // а не roll (orientation[2]), который использовался для portrait-логики.
+            rollDeg = orientation[1] * 180f / PI.toFloat()
             val raw = (rollDeg - centerRoll) / maxSteerAngle
             steer = raw.coerceIn(-1f, 1f).let { if (abs(it) < 0.015f) 0f else it }
         }
@@ -318,44 +381,64 @@ class MainActivity : Activity(), SensorEventListener {
             if (bold) typeface = Typeface.DEFAULT_BOLD
         }
 
-    private fun roundRect(color: Int, radius: Float) =
+    private fun roundRect(color: Int, radius: Float, strokeColor: Int? = null, strokeW: Float = 0f) =
         android.graphics.drawable.GradientDrawable().apply {
             setColor(color); cornerRadius = radius
+            if (strokeColor != null) setStroke(strokeW.toInt(), strokeColor)
         }
 
     private fun tabBtn(label: String, selected: Boolean) = Button(this).apply {
         text = label
-        setTextColor(if (selected) Color.parseColor("#7c6fff") else Color.parseColor("#6b7394"))
-        background = roundRect(
-            if (selected) Color.parseColor("#1a213a") else Color.parseColor("#1e2536"),
-            dp(10).toFloat())
+        textSize = 12.5f
+        letterSpacing = 0.04f
+        setTextColor(if (selected) Color.WHITE else Color.parseColor("#6b7394"))
+        typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        background = if (selected)
+            roundRect(Color.parseColor("#5b4fe8"), dp(12).toFloat())
+        else
+            roundRect(Color.parseColor("#161b2c"), dp(12).toFloat(),
+                Color.parseColor("#252c44"), dp(2).toFloat())
     }
 
     @SuppressLint("ClickableViewAccessibility", "SetTextI18n")
     private fun buildUi() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.parseColor("#080b12"))
-            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                intArrayOf(Color.parseColor("#0a0d16"), Color.parseColor("#070910"))
+            )
+            setPadding(dp(7), dp(7), dp(7), dp(7))
         }
 
         // GAS left
         gasView = PedalView(this, true)
-        root.addView(gasView, lp(0, MATCH, 1f, endMargin = dp(6)))
+        root.addView(gasView, lp(0, MATCH, 1f, endMargin = dp(7)))
 
         // CENTER
         val center = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-            background = roundRect(Color.parseColor("#10141f"), dp(18).toFloat())
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            background = roundRect(Color.parseColor("#11151f"), dp(20).toFloat(),
+                Color.parseColor("#1f2536"), dp(2).toFloat())
         }
-        root.addView(center, lp(0, MATCH, 2.4f, endMargin = dp(6)))
+        root.addView(center, lp(0, MATCH, 2.4f, endMargin = dp(7)))
 
-        // status
-        val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        statusText = tv("не подключено", 11f, Color.parseColor("#ffbe5f"))
+        // status row with indicator dot
+        val topRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        statusDot = View(this).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(Color.parseColor("#ffbe5f"))
+            }
+        }
+        topRow.addView(statusDot, LinearLayout.LayoutParams(dp(8), dp(8)).also { it.setMargins(0, 0, dp(6), 0) })
+        statusText = tv("не подключено", 12f, Color.parseColor("#ffbe5f"), bold = true)
         topRow.addView(statusText, lp(0, WRAP, 1f))
-        center.addView(topRow, lp(MATCH, dp(24)))
+        center.addView(topRow, lp(MATCH, dp(26)))
 
         // mode toggle
         val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -372,11 +455,12 @@ class MainActivity : Activity(), SensorEventListener {
             hint = "192.168.1.20"
             setText("192.168.1.20")
             setTextColor(Color.WHITE)
-            setHintTextColor(Color.parseColor("#6b7394"))
+            setHintTextColor(Color.parseColor("#525a78"))
             inputType = InputType.TYPE_CLASS_TEXT
             maxLines = 1
-            background = roundRect(Color.parseColor("#0a0d15"), dp(10).toFloat())
-            setPadding(dp(10), dp(6), dp(10), dp(6))
+            background = roundRect(Color.parseColor("#0a0d15"), dp(12).toFloat(),
+                Color.parseColor("#1f2536"), dp(2).toFloat())
+            setPadding(dp(12), dp(6), dp(12), dp(6))
             visibility = View.GONE
         }
         center.addView(ipInput, lp(MATCH, dp(42)).also { it.setMargins(0, dp(4), 0, 0) })
@@ -385,160 +469,20 @@ class MainActivity : Activity(), SensorEventListener {
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         connectBtn = Button(this).apply {
             text = "Подключить"
-            setTextColor(Color.parseColor("#7c6fff"))
-            background = roundRect(Color.parseColor("#1f2a4a"), dp(10).toFloat())
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            background = roundRect(Color.parseColor("#5b4fe8"), dp(12).toFloat())
             setOnClickListener { if (connected) disconnect() else connect() }
         }
         val centerBtn = Button(this).apply {
             text = "Центр"
-            setTextColor(Color.WHITE)
-            background = roundRect(Color.parseColor("#1e2536"), dp(10).toFloat())
+            textSize = 13f
+            setTextColor(Color.parseColor("#c7cbe0"))
+            background = roundRect(Color.parseColor("#161b2c"), dp(12).toFloat(),
+                Color.parseColor("#252c44"), dp(2).toFloat())
             setOnClickListener {
                 centerRoll = rollDeg
                 Toast.makeText(context, "Центр установлен", Toast.LENGTH_SHORT).show()
             }
         }
-        btnRow.addView(connectBtn, lp(0, dp(44), 1f, endMargin = dp(4)))
-        btnRow.addView(centerBtn,  lp(0, dp(44), 1f))
-        center.addView(btnRow, lp(MATCH, dp(44)).also { it.setMargins(0, dp(4), 0, 0) })
-
-        // angle label + seekbar
-        val angleLabel = tv("Угол: 45°", 11f, Color.parseColor("#6b7394"))
-        center.addView(angleLabel, lp(MATCH, dp(22)).also { it.setMargins(0, dp(6), 0, 0) })
-        val angleSeek = SeekBar(this).apply {
-            max = 80; progress = 35
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, u: Boolean) {
-                    maxSteerAngle = (10 + p).toFloat()
-                    angleLabel.text = "Угол: ${maxSteerAngle.toInt()}°"
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-        }
-        center.addView(angleSeek, lp(MATCH, dp(32)))
-
-        // wheel
-        wheelView = WheelView(this)
-        center.addView(wheelView, lp(MATCH, 0, 1f))
-
-        // steer text
-        steerTv = tv("+0°", 22f, Color.parseColor("#7c6fff"), bold = true).apply {
-            gravity = Gravity.CENTER
-        }
-        center.addView(steerTv, lp(MATCH, dp(34)))
-
-        // hint
-        val hint = tv("Держи как руль. Нажми Центр перед игрой.", 10f, Color.parseColor("#6b7394"))
-        hint.gravity = Gravity.CENTER
-        center.addView(hint, lp(MATCH, dp(24)))
-
-        // BRAKE right
-        brakeView = PedalView(this, false)
-        root.addView(brakeView, lp(0, MATCH, 1f))
-
-        setContentView(root)
-    }
-
-    private fun setConnMode(usb: Boolean, usbBtn: Button, wifiBtn: Button) {
-        usbMode = usb
-        usbBtn.setTextColor(if (usb) Color.parseColor("#7c6fff") else Color.parseColor("#6b7394"))
-        usbBtn.background = roundRect(
-            if (usb) Color.parseColor("#1a213a") else Color.parseColor("#1e2536"), dp(10).toFloat())
-        wifiBtn.setTextColor(if (!usb) Color.parseColor("#7c6fff") else Color.parseColor("#6b7394"))
-        wifiBtn.background = roundRect(
-            if (!usb) Color.parseColor("#1a213a") else Color.parseColor("#1e2536"), dp(10).toFloat())
-        ipInput.visibility = if (usb) View.GONE else View.VISIBLE
-    }
-
-    private fun connect() {
-        val ip  = ipInput.text.toString().trim().ifBlank { "127.0.0.1" }
-        val url = if (usbMode) "ws://127.0.0.1:27111/ws" else "ws://$ip:27111/ws"
-        statusText.text = "Подключение..."
-        statusText.setTextColor(Color.parseColor("#ffbe5f"))
-        val req = Request.Builder().url(url).build()
-        socket = client.newWebSocket(req, object : WebSocketListener() {
-            override fun onOpen(ws: WebSocket, response: Response) {
-                connected = true
-                ws.send(JSONObject()
-                    .put("type", "hello")
-                    .put("name", android.os.Build.MODEL)
-                    .put("mode", if (usbMode) "usb" else "wifi")
-                    .toString())
-                runOnUiThread {
-                    statusText.text = "Подключено"
-                    statusText.setTextColor(Color.parseColor("#22dc82"))
-                    connectBtn.text = "Отключить"
-                    connectBtn.setTextColor(Color.parseColor("#22dc82"))
-                    connectBtn.background = roundRect(Color.parseColor("#0e2a1e"), dp(10).toFloat())
-                }
-            }
-            override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                connected = false
-                runOnUiThread {
-                    statusText.text = "Ошибка: ${t.message?.take(28) ?: "?"}"
-                    statusText.setTextColor(Color.parseColor("#ff6060"))
-                    connectBtn.text = "Подключить"
-                    connectBtn.setTextColor(Color.parseColor("#7c6fff"))
-                    connectBtn.background = roundRect(Color.parseColor("#1f2a4a"), dp(10).toFloat())
-                }
-            }
-            override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                connected = false
-                runOnUiThread {
-                    statusText.text = "Отключено"
-                    statusText.setTextColor(Color.parseColor("#ffbe5f"))
-                    connectBtn.text = "Подключить"
-                    connectBtn.setTextColor(Color.parseColor("#7c6fff"))
-                    connectBtn.background = roundRect(Color.parseColor("#1f2a4a"), dp(10).toFloat())
-                }
-            }
-        })
-    }
-
-    private fun disconnect() {
-        connected = false
-        socket?.close(1000, "user")
-        socket = null
-        statusText.text = "Отключено"
-        statusText.setTextColor(Color.parseColor("#ffbe5f"))
-        connectBtn.text = "Подключить"
-        connectBtn.setTextColor(Color.parseColor("#7c6fff"))
-        connectBtn.background = roundRect(Color.parseColor("#1f2a4a"), dp(10).toFloat())
-    }
-
-    private fun startSendLoop() {
-        handler.post(object : Runnable {
-            override fun run() {
-                if (connected) {
-                    try {
-                        socket?.send(JSONObject()
-                            .put("type",     "state")
-                            .put("seq",      seq++)
-                            .put("steer",    steer.toDouble())
-                            .put("throttle", gasView.value.toDouble() / 100.0)
-                            .put("brake",    brakeView.value.toDouble() / 100.0)
-                            .put("buttons",  JSONObject())
-                            .toString())
-                    } catch (_: Exception) {}
-                }
-                handler.postDelayed(this, 16L)
-            }
-        })
-    }
-
-    private fun startUiLoop() {
-        handler.post(object : Runnable {
-            override fun run() {
-                val deg  = (steer * maxSteerAngle).toInt()
-                val sign = if (deg >= 0) "+" else ""
-                steerTv.text      = "$sign${deg}°"
-                wheelView.steer   = steer
-                wheelView.gas     = gasView.value / 100f
-                wheelView.brake   = brakeView.value / 100f
-                wheelView.invalidate()
-                handler.postDelayed(this, 40L)
-            }
-        })
-    }
-}
+        b
