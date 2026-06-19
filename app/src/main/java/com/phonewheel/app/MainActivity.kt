@@ -205,12 +205,12 @@ class WheelView(context: Context) : View(context) {
         val sign = if (deg >= 0) "+" else ""
         canvas.drawText("$sign${deg}°", cx, cy + r * 0.08f, paintText)
 
-        // gas arc bottom-left
-        drawPedalArc(canvas, cx, cy, r * 0.72f, r * 0.11f, 200f, 60f, gas,
-            Color.parseColor("#0e2a1e"), Color.parseColor("#22dc82"))
-        // brake arc bottom-right
-        drawPedalArc(canvas, cx, cy, r * 0.72f, r * 0.11f, 280f, 60f, brake,
+        // brake arc bottom-left
+        drawPedalArc(canvas, cx, cy, r * 0.72f, r * 0.11f, 200f, 60f, brake,
             Color.parseColor("#2a0e0e"), Color.parseColor("#ff4f4f"))
+        // gas arc bottom-right
+        drawPedalArc(canvas, cx, cy, r * 0.72f, r * 0.11f, 280f, 60f, gas,
+            Color.parseColor("#0e2a1e"), Color.parseColor("#22dc82"))
     }
 
     private fun drawPedalArc(canvas: Canvas, cx: Float, cy: Float,
@@ -351,9 +351,9 @@ class MainActivity : Activity(), SensorEventListener {
             setPadding(dp(6), dp(6), dp(6), dp(6))
         }
 
-        // GAS left
-        gasView = PedalView(this, true)
-        root.addView(gasView, lp(0, MATCH, 1f, endMargin = dp(6)))
+        // BRAKE left
+        brakeView = PedalView(this, false)
+        root.addView(brakeView, lp(0, MATCH, 1f, endMargin = dp(6)))
 
         // CENTER
         val center = LinearLayout(this).apply {
@@ -445,9 +445,9 @@ class MainActivity : Activity(), SensorEventListener {
         hint.gravity = Gravity.CENTER
         center.addView(hint, lp(MATCH, dp(24)))
 
-        // BRAKE right
-        brakeView = PedalView(this, false)
-        root.addView(brakeView, lp(0, MATCH, 1f))
+        // GAS right
+        gasView = PedalView(this, true)
+        root.addView(gasView, lp(0, MATCH, 1f))
 
         val screen = FrameLayout(this)
         screen.addView(root, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -507,212 +507,4 @@ class MainActivity : Activity(), SensorEventListener {
             background = roundRect(Color.parseColor("#5b4fe8"), dp(10).toFloat())
             setOnClickListener { addButtonDialog() }
         }
-        editToolbar.addView(addBtn, lp(0, dp(34), 1f, endMargin = dp(4)))
-        val doneBtn = Button(this).apply {
-            text = "Готово"
-            setTextColor(Color.parseColor("#22dc82"))
-            background = roundRect(Color.parseColor("#0e2a1e"), dp(10).toFloat())
-            setOnClickListener { setEditMode(false) }
-        }
-        editToolbar.addView(doneBtn, lp(0, dp(34), 1f))
-
-        val toolbarLp = FrameLayout.LayoutParams(MATCH, WRAP).apply {
-            gravity = Gravity.TOP
-        }
-        screen.addView(editToolbar, toolbarLp)
-    }
-
-    private fun setEditMode(on: Boolean) {
-        editMode = on
-        customButtons.forEach { it.editMode = on }
-        editToolbar.visibility = if (on) View.VISIBLE else View.GONE
-    }
-
-    private fun rebuildButtons(layouts: List<ButtonLayout>) {
-        customButtons.forEach { buttonOverlay.removeView(it) }
-        customButtons.clear()
-        val pw = buttonOverlay.width.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels.toFloat()
-        val ph = buttonOverlay.height.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.heightPixels.toFloat()
-        for (bl in layouts) {
-            val view = CustomButtonView(this, bl.action, bl.label,
-                onMoved = { persistCurrentLayout() },
-                onLongPressRemove = { v -> confirmRemove(v) })
-            view.editMode = editMode
-            val params = FrameLayout.LayoutParams((bl.wFrac * pw).toInt(), (bl.hFrac * ph).toInt()).apply {
-                leftMargin = (bl.xFrac * pw).toInt()
-                topMargin  = (bl.yFrac * ph).toInt()
-            }
-            buttonOverlay.addView(view, params)
-            customButtons.add(view)
-        }
-    }
-
-    private fun confirmRemove(view: CustomButtonView) {
-        AlertDialog.Builder(this)
-            .setTitle("Удалить кнопку «${view.labelText}»?")
-            .setPositiveButton("Удалить") { _, _ ->
-                buttonOverlay.removeView(view)
-                customButtons.remove(view)
-                persistCurrentLayout()
-            }
-            .setNegativeButton("Отмена", null)
-            .show()
-    }
-
-    private fun addButtonDialog() {
-        val present = customButtons.map { it.action }.toSet()
-        val choices = ButtonAction.values().filter { it !in present }
-        if (choices.isEmpty()) {
-            Toast.makeText(this, "Все доступные кнопки уже добавлены", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val labels = choices.map { it.defaultLabel }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Добавить кнопку")
-            .setItems(labels) { _, index ->
-                val action = choices[index]
-                val pw = buttonOverlay.width.toFloat()
-                val ph = buttonOverlay.height.toFloat()
-                val stagger = (customButtons.size % 4) * dp(18)
-                val view = CustomButtonView(this, action, action.defaultLabel,
-                    onMoved = { persistCurrentLayout() },
-                    onLongPressRemove = { v -> confirmRemove(v) })
-                view.editMode = editMode
-                val w = dp(90); val h = dp(70)
-                val params = FrameLayout.LayoutParams(w, h).apply {
-                    leftMargin = ((pw - w) / 2f).toInt() + stagger
-                    topMargin  = ((ph - h) / 2f).toInt() + stagger
-                }
-                buttonOverlay.addView(view, params)
-                customButtons.add(view)
-                persistCurrentLayout()
-            }
-            .show()
-    }
-
-    private fun persistCurrentLayout() {
-        layoutStore.save(customButtons.map { it.toLayout() }, currentPreset)
-    }
-
-    private fun applyPreset(key: String) {
-        currentPreset = key
-        rebuildButtons(Presets.layoutFor(key))
-        persistCurrentLayout()
-        presetChips.forEach { (k, btn) ->
-            val selected = k == key
-            btn.setTextColor(if (selected) Color.parseColor("#7c6fff") else Color.parseColor("#6b7394"))
-            btn.background = roundRect(
-                if (selected) Color.parseColor("#1a213a") else Color.parseColor("#1e2536"),
-                dp(10).toFloat())
-        }
-    }
-
-    private fun setConnMode(usb: Boolean, usbBtn: Button, wifiBtn: Button) {
-        usbMode = usb
-        usbBtn.setTextColor(if (usb) Color.parseColor("#7c6fff") else Color.parseColor("#6b7394"))
-        usbBtn.background = roundRect(
-            if (usb) Color.parseColor("#1a213a") else Color.parseColor("#1e2536"), dp(10).toFloat())
-        wifiBtn.setTextColor(if (!usb) Color.parseColor("#7c6fff") else Color.parseColor("#6b7394"))
-        wifiBtn.background = roundRect(
-            if (!usb) Color.parseColor("#1a213a") else Color.parseColor("#1e2536"), dp(10).toFloat())
-        ipInput.visibility = if (usb) View.GONE else View.VISIBLE
-    }
-
-    private fun connect() {
-        val ip  = ipInput.text.toString().trim().ifBlank { "127.0.0.1" }
-        val url = if (usbMode) "ws://127.0.0.1:27111/ws" else "ws://$ip:27111/ws"
-        statusText.text = "Подключение..."
-        statusText.setTextColor(Color.parseColor("#ffbe5f"))
-        val req = Request.Builder().url(url).build()
-        socket = client.newWebSocket(req, object : WebSocketListener() {
-            override fun onOpen(ws: WebSocket, response: Response) {
-                connected = true
-                ws.send(JSONObject()
-                    .put("type", "hello")
-                    .put("name", android.os.Build.MODEL)
-                    .put("mode", if (usbMode) "usb" else "wifi")
-                    .toString())
-                runOnUiThread {
-                    statusText.text = "Подключено"
-                    statusText.setTextColor(Color.parseColor("#22dc82"))
-                    connectBtn.text = "Отключить"
-                    connectBtn.setTextColor(Color.parseColor("#22dc82"))
-                    connectBtn.background = roundRect(Color.parseColor("#0e2a1e"), dp(10).toFloat())
-                }
-            }
-            override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                connected = false
-                runOnUiThread {
-                    statusText.text = "Ошибка: ${t.message?.take(28) ?: "?"}"
-                    statusText.setTextColor(Color.parseColor("#ff6060"))
-                    connectBtn.text = "Подключить"
-                    connectBtn.setTextColor(Color.parseColor("#7c6fff"))
-                    connectBtn.background = roundRect(Color.parseColor("#1f2a4a"), dp(10).toFloat())
-                }
-            }
-            override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                connected = false
-                runOnUiThread {
-                    statusText.text = "Отключено"
-                    statusText.setTextColor(Color.parseColor("#ffbe5f"))
-                    connectBtn.text = "Подключить"
-                    connectBtn.setTextColor(Color.parseColor("#7c6fff"))
-                    connectBtn.background = roundRect(Color.parseColor("#1f2a4a"), dp(10).toFloat())
-                }
-            }
-        })
-    }
-
-    private fun disconnect() {
-        connected = false
-        socket?.close(1000, "user")
-        socket = null
-        statusText.text = "Отключено"
-        statusText.setTextColor(Color.parseColor("#ffbe5f"))
-        connectBtn.text = "Подключить"
-        connectBtn.setTextColor(Color.parseColor("#7c6fff"))
-        connectBtn.background = roundRect(Color.parseColor("#1f2a4a"), dp(10).toFloat())
-    }
-
-    private fun startSendLoop() {
-        handler.post(object : Runnable {
-            override fun run() {
-                if (connected) {
-                    try {
-                        val buttons = JSONObject()
-                        // Always emit every known action key (false if not present
-                        // on screen right now) so the PC side mapping never has
-                        // to guess which buttons exist in the current layout.
-                        for (action in ButtonAction.values()) buttons.put(action.id, false)
-                        for (cb in customButtons) buttons.put(cb.action.id, cb.pressed)
-                        socket?.send(JSONObject()
-                            .put("type",     "state")
-                            .put("seq",      seq++)
-                            .put("steer",    steer.toDouble())
-                            .put("throttle", gasView.value.toDouble() / 100.0)
-                            .put("brake",    brakeView.value.toDouble() / 100.0)
-                            .put("buttons",  buttons)
-                            .put("preset",   currentPreset)
-                            .toString())
-                    } catch (_: Exception) {}
-                }
-                handler.postDelayed(this, 16L)
-            }
-        })
-    }
-
-    private fun startUiLoop() {
-        handler.post(object : Runnable {
-            override fun run() {
-                val deg  = (steer * maxSteerAngle).toInt()
-                val sign = if (deg >= 0) "+" else ""
-                steerTv.text      = "$sign${deg}°"
-                wheelView.steer   = steer
-                wheelView.gas     = gasView.value / 100f
-                wheelView.brake   = brakeView.value / 100f
-                wheelView.invalidate()
-                handler.postDelayed(this, 40L)
-            }
-        })
-    }
-}
+        editToolbar.addView(addBtn, lp(0, dp(34), 1f, endMarg
