@@ -11,7 +11,8 @@
             android:exported="true"
             android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|keyboardHidden"
-            android:windowSoftInputMode="adjustNothing">
+            android:windowSoftInputMode="adjustNothing"
+            android:keepScreenOn="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
