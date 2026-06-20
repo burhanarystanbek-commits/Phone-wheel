@@ -3,63 +3,35 @@ using System.Text.Json;
 namespace PhoneWheelPC;
 
 /// <summary>
-/// Maps the action ids the phone sends (gear_up, gear_down, handbrake, drs,
-/// pit_limiter) to a vJoy button number. This is the ONLY place the phone's
-/// "preset" choice actually affects the PC side — the phone just decides
-/// which buttons are drawn on screen, the PC decides what they do in Windows.
-/// Once vJoy button N is set here, you still bind "vJoy Button N" inside
-/// each game's own Controls menu — that one-time step happens in-game.
+/// Maps whatever button ids the phone is currently sending ("btn_1", "btn_2",
+/// ...) to a vJoy button number, plus a friendly display name for the PC UI.
+/// The phone decides how many buttons exist and what they're called there;
+/// the PC decides which vJoy button number each one fires. Once vJoy button
+/// N is set here, you still bind "vJoy Button N" inside each game's own
+/// Controls menu — that one-time step happens in-game.
 /// </summary>
+public class ButtonMapEntry
+{
+    public int VjoyButton { get; set; } = 1;
+
+    /// <summary>Friendly name shown in the PC UI for this entry. Defaults to
+    /// whatever label the phone is currently sending for this id, but can be
+    /// overridden here independent of the phone-side label.</summary>
+    public string DisplayName { get; set; } = "";
+}
+
 public class Mapping
 {
-    public Dictionary<string, int> ActionToButton { get; set; } = new();
+    /// <summary>buttonId -> mapping entry. Grows automatically as new
+    /// buttons show up from the phone; nothing here is fixed in advance.</summary>
+    public Dictionary<string, ButtonMapEntry> Entries { get; set; } = new();
 
-    public static readonly string[] KnownActions =
-        { "gear_up", "gear_down", "handbrake", "drs", "pit_limiter" };
+    private static string ConfigPath() =>
+        Path.Combine(AppContext.BaseDirectory, "mapping.json");
 
-    public static Mapping Default(string presetKey) => presetKey switch
+    public static Mapping LoadOrDefault()
     {
-        "f1" => new Mapping
-        {
-            ActionToButton = new()
-            {
-                ["gear_up"] = 1,
-                ["gear_down"] = 2,
-                ["drs"] = 3,
-                ["pit_limiter"] = 4,
-                ["handbrake"] = 5,
-            }
-        },
-        "iracing" => new Mapping
-        {
-            ActionToButton = new()
-            {
-                ["gear_up"] = 1,
-                ["gear_down"] = 2,
-                ["handbrake"] = 3,
-                ["pit_limiter"] = 4,
-                ["drs"] = 5,
-            }
-        },
-        _ => new Mapping // assetto_corsa and fallback
-        {
-            ActionToButton = new()
-            {
-                ["gear_up"] = 1,
-                ["gear_down"] = 2,
-                ["handbrake"] = 3,
-                ["pit_limiter"] = 4,
-                ["drs"] = 5,
-            }
-        }
-    };
-
-    private static string ConfigPath(string presetKey) =>
-        Path.Combine(AppContext.BaseDirectory, $"mapping.{presetKey}.json");
-
-    public static Mapping LoadOrDefault(string presetKey)
-    {
-        var path = ConfigPath(presetKey);
+        var path = ConfigPath();
         try
         {
             if (File.Exists(path))
@@ -69,22 +41,45 @@ public class Mapping
                 if (loaded != null) return loaded;
             }
         }
-        catch { /* fall back to defaults below */ }
-        return Default(presetKey);
+        catch { /* fall back to empty mapping below */ }
+        return new Mapping();
     }
 
-    public void Save(string presetKey)
+    public void Save()
     {
-        var path = ConfigPath(presetKey);
         var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(path, json);
+        File.WriteAllText(ConfigPath(), json);
     }
 
-    /// <summary>Short, human-readable per-game hint for where to bind these in-game.</summary>
-    public static string GameHint(string presetKey) => presetKey switch
+    /// <summary>Ensures every button id currently seen from the phone has a
+    /// mapping row, auto-assigning the next free vJoy button number to any
+    /// new id. Returns true if the mapping changed (so the caller can
+    /// refresh the UI / persist it).</summary>
+    public bool EnsureEntriesFor(IEnumerable<string> buttonIds, IDictionary<string, string> labels)
     {
-        "f1" => "Игра → Settings → Controls → выбери схему 'Wheel' → назначь vJoy Button N на Gear Up/Down, DRS, Pit Limiter, Handbrake.",
-        "iracing" => "Игра → Options → Controls → Calibrate/Buttons → назначь vJoy Button N (телефон шлёт как нажатие кнопки).",
-        _ => "Игра → Options → Controls → Steering Wheel → Buttons → назначь vJoy Button N на нужное действие.",
-    };
+        var changed = false;
+        foreach (var id in buttonIds)
+        {
+            if (!Entries.ContainsKey(id))
+            {
+                var nextBtn = Entries.Count == 0 ? 1 : Entries.Values.Max(e => e.VjoyButton) + 1;
+                if (nextBtn > 32) nextBtn = 32;
+                Entries[id] = new ButtonMapEntry
+                {
+                    VjoyButton = nextBtn,
+                    DisplayName = labels.TryGetValue(id, out var lbl) ? lbl : id
+                };
+                changed = true;
+            }
+            else if (string.IsNullOrEmpty(Entries[id].DisplayName) && labels.TryGetValue(id, out var lbl2))
+            {
+                Entries[id].DisplayName = lbl2;
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    public const string GameHint =
+        "Игра → Options/Settings → Controls → Steering Wheel → Buttons → назначь vJoy Button N на нужное действие.";
 }
