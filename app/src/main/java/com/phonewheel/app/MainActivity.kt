@@ -257,15 +257,14 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var ipInput:       EditText
     private lateinit var steerTv:       TextView
 
-    // --- customizable buttons (free placement, presets) ---
+    // --- customizable buttons (free placement, unlimited count) ---
     private lateinit var layoutStore:    LayoutStore
     private lateinit var buttonOverlay:  FrameLayout
     private lateinit var editToggleBtn:  Button
     private lateinit var editToolbar:    LinearLayout
     private val customButtons = mutableListOf<CustomButtonView>()
-    private var currentPreset = Presets.ASSETTO_CORSA
+    private var nextButtonId = 1
     private var editMode = false
-    private val presetChips = mutableMapOf<String, Button>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -464,16 +463,14 @@ class MainActivity : Activity(), SensorEventListener {
         setContentView(screen)
 
         buttonOverlay.post {
-            val (loaded, presetKey) = layoutStore.load() ?: (Presets.layoutFor(currentPreset) to currentPreset)
-            currentPreset = presetKey
-            rebuildButtons(loaded)
-            presetChips.forEach { (k, btn) ->
-                val selected = k == currentPreset
-                btn.setTextColor(if (selected) Color.parseColor("#7c6fff") else Color.parseColor("#6b7394"))
-                btn.background = roundRect(
-                    if (selected) Color.parseColor("#1a213a") else Color.parseColor("#1e2536"),
-                    dp(10).toFloat())
+            val loaded = layoutStore.load()
+            if (loaded != null) {
+                val (layouts, savedNextId) = loaded
+                nextButtonId = savedNextId
+                rebuildButtons(layouts)
             }
+            // No saved layout yet -> start with an empty overlay; user adds
+            // buttons with the "+" toolbar button.
         }
     }
 
@@ -492,26 +489,22 @@ class MainActivity : Activity(), SensorEventListener {
         }
         screen.addView(editToggleBtn, toggleLp)
 
-        // toolbar shown only while editing: preset chips + add + done
+        // toolbar shown only while editing: add + done
         editToolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.argb(220, 12, 14, 22))
             setPadding(dp(8), dp(6), dp(8), dp(6))
             visibility = View.GONE
         }
-        for ((key, label) in Presets.NAMES) {
-            val chip = tabBtn(label, key == currentPreset)
-            chip.setOnClickListener { applyPreset(key) }
-            presetChips[key] = chip
-            editToolbar.addView(chip, lp(0, dp(34), 1f, endMargin = dp(4)))
-        }
         val addBtn = Button(this).apply {
-            text = "+ Кнопка"
+            text = "+ Добавить кнопку"
             setTextColor(Color.WHITE)
             background = roundRect(Color.parseColor("#5b4fe8"), dp(10).toFloat())
-            setOnClickListener { addButtonDialog() }
+            setOnClickListener { addNewButton() }
         }
         editToolbar.addView(addBtn, lp(0, dp(34), 1f, endMargin = dp(4)))
+        val hintLbl = tv("тяни • тяни уголок чтобы изменить размер • тап чтобы переименовать • держи чтобы удалить", 9f, Color.parseColor("#6b7394"))
+        editToolbar.addView(hintLbl, lp(0, dp(34), 1.4f, endMargin = dp(4)))
         val doneBtn = Button(this).apply {
             text = "Готово"
             setTextColor(Color.parseColor("#22dc82"))
@@ -538,9 +531,10 @@ class MainActivity : Activity(), SensorEventListener {
         val pw = buttonOverlay.width.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels.toFloat()
         val ph = buttonOverlay.height.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.heightPixels.toFloat()
         for (bl in layouts) {
-            val view = CustomButtonView(this, bl.action, bl.label,
+            val view = CustomButtonView(this, bl.id, bl.label,
                 onMoved = { persistCurrentLayout() },
-                onLongPressRemove = { v -> confirmRemove(v) })
+                onLongPressRemove = { v -> confirmRemove(v) },
+                onTapRename = { v -> renameDialog(v) })
             view.editMode = editMode
             val params = FrameLayout.LayoutParams((bl.wFrac * pw).toInt(), (bl.hFrac * ph).toInt()).apply {
                 leftMargin = (bl.xFrac * pw).toInt()
@@ -563,52 +557,57 @@ class MainActivity : Activity(), SensorEventListener {
             .show()
     }
 
-    private fun addButtonDialog() {
-        val present = customButtons.map { it.action }.toSet()
-        val choices = ButtonAction.values().filter { it !in present }
-        if (choices.isEmpty()) {
-            Toast.makeText(this, "Все доступные кнопки уже добавлены", Toast.LENGTH_SHORT).show()
-            return
+    private fun renameDialog(view: CustomButtonView) {
+        val input = EditText(this).apply {
+            setText(view.labelText)
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.parseColor("#6b7394"))
+            hint = "Название кнопки"
+            setSingleLine(true)
+            setSelection(text.length)
         }
-        val labels = choices.map { it.defaultLabel }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("Добавить кнопку")
-            .setItems(labels) { _, index ->
-                val action = choices[index]
-                val pw = buttonOverlay.width.toFloat()
-                val ph = buttonOverlay.height.toFloat()
-                val stagger = (customButtons.size % 4) * dp(18)
-                val view = CustomButtonView(this, action, action.defaultLabel,
-                    onMoved = { persistCurrentLayout() },
-                    onLongPressRemove = { v -> confirmRemove(v) })
-                view.editMode = editMode
-                val w = dp(90); val h = dp(70)
-                val params = FrameLayout.LayoutParams(w, h).apply {
-                    leftMargin = ((pw - w) / 2f).toInt() + stagger
-                    topMargin  = ((ph - h) / 2f).toInt() + stagger
+            .setTitle("Название кнопки (${view.buttonId})")
+            .setView(input)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val newLabel = input.text.toString().trim()
+                if (newLabel.isNotEmpty()) {
+                    view.labelText = newLabel
+                    view.invalidate()
+                    persistCurrentLayout()
                 }
-                buttonOverlay.addView(view, params)
-                customButtons.add(view)
-                persistCurrentLayout()
             }
+            .setNegativeButton("Отмена", null)
             .show()
     }
 
-    private fun persistCurrentLayout() {
-        layoutStore.save(customButtons.map { it.toLayout() }, currentPreset)
+    /** Adds a new free-form button in the center of the screen with a fresh,
+     *  never-reused id ("btn_N"). No fixed catalogue, no limit on count. */
+    private fun addNewButton() {
+        val pw = buttonOverlay.width.toFloat()
+        val ph = buttonOverlay.height.toFloat()
+        val id = "btn_${nextButtonId}"
+        val label = "BTN $nextButtonId"
+        nextButtonId++
+
+        val stagger = (customButtons.size % 5) * dp(16)
+        val view = CustomButtonView(this, id, label,
+            onMoved = { persistCurrentLayout() },
+            onLongPressRemove = { v -> confirmRemove(v) },
+            onTapRename = { v -> renameDialog(v) })
+        view.editMode = editMode
+        val w = dp(90); val h = dp(70)
+        val params = FrameLayout.LayoutParams(w, h).apply {
+            leftMargin = ((pw - w) / 2f).toInt() + stagger
+            topMargin  = ((ph - h) / 2f).toInt() + stagger
+        }
+        buttonOverlay.addView(view, params)
+        customButtons.add(view)
+        persistCurrentLayout()
     }
 
-    private fun applyPreset(key: String) {
-        currentPreset = key
-        rebuildButtons(Presets.layoutFor(key))
-        persistCurrentLayout()
-        presetChips.forEach { (k, btn) ->
-            val selected = k == key
-            btn.setTextColor(if (selected) Color.parseColor("#7c6fff") else Color.parseColor("#6b7394"))
-            btn.background = roundRect(
-                if (selected) Color.parseColor("#1a213a") else Color.parseColor("#1e2536"),
-                dp(10).toFloat())
-        }
+    private fun persistCurrentLayout() {
+        layoutStore.save(customButtons.map { it.toLayout() }, nextButtonId)
     }
 
     private fun setConnMode(usb: Boolean, usbBtn: Button, wifiBtn: Button) {
@@ -684,11 +683,15 @@ class MainActivity : Activity(), SensorEventListener {
                 if (connected) {
                     try {
                         val buttons = JSONObject()
-                        // Always emit every known action key (false if not present
-                        // on screen right now) so the PC side mapping never has
-                        // to guess which buttons exist in the current layout.
-                        for (action in ButtonAction.values()) buttons.put(action.id, false)
-                        for (cb in customButtons) buttons.put(cb.action.id, cb.pressed)
+                        val labels  = JSONObject()
+                        // Emit id->pressed and id->label for every button
+                        // currently on screen, so the PC side can build its
+                        // mapping table from whatever buttons actually exist
+                        // — no fixed catalogue, no limit on count.
+                        for (cb in customButtons) {
+                            buttons.put(cb.buttonId, cb.pressed)
+                            labels.put(cb.buttonId, cb.labelText)
+                        }
                         socket?.send(JSONObject()
                             .put("type",     "state")
                             .put("seq",      seq++)
@@ -696,7 +699,7 @@ class MainActivity : Activity(), SensorEventListener {
                             .put("throttle", 0.5 + gasView.value.toDouble() / 200.0)
                             .put("brake",    0.5 + brakeView.value.toDouble() / 200.0)
                             .put("buttons",  buttons)
-                            .put("preset",   currentPreset)
+                            .put("buttonLabels", labels)
                             .toString())
                     } catch (_: Exception) {}
                 }
