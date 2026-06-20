@@ -19,97 +19,35 @@ import org.json.JSONObject
 import kotlin.math.abs
 
 /**
- * Fixed set of momentary actions a custom button can trigger. The string id
- * is what gets sent to the PC app over the WebSocket "buttons" map, so it
- * must never change once a preset/profile depends on it — the PC side maps
- * id -> vJoy button number, independent of where the button sits on screen.
+ * A free-form button the user created on the phone. The id is a stable
+ * string ("btn_1", "btn_2", ...) generated once when the button is added and
+ * never reused — it's what gets sent to the PC app over the WebSocket
+ * "buttons" map. The PC side maps id -> vJoy button number + a human label,
+ * independent of where the button sits on the phone screen or what it's
+ * called there.
  */
-enum class ButtonAction(val id: String, val defaultLabel: String) {
-    GEAR_UP("gear_up", "UP"),
-    GEAR_DOWN("gear_down", "DOWN"),
-    HANDBRAKE("handbrake", "HB"),
-    DRS("drs", "DRS"),
-    PIT_LIMITER("pit_limiter", "PIT");
-
-    companion object {
-        fun byId(id: String): ButtonAction? = values().firstOrNull { it.id == id }
-    }
-}
-
-/** One button's position/size as a fraction of the overlay (0..1), so it is
- *  resolution- and orientation-independent. */
 data class ButtonLayout(
-    val action: ButtonAction,
+    val id: String,
     var xFrac: Float,
     var yFrac: Float,
     var wFrac: Float,
     var hFrac: Float,
-    var label: String = action.defaultLabel
+    var label: String
 ) {
-    fun copy2() = ButtonLayout(action, xFrac, yFrac, wFrac, hFrac, label)
+    fun copy2() = ButtonLayout(id, xFrac, yFrac, wFrac, hFrac, label)
 }
 
-/**
- * Built-in default layouts for supported games. These only decide where
- * buttons sit on the phone screen and which of them are visible by default —
- * the actual in-game effect of each action is configured on the PC app side.
- */
-object Presets {
-    const val ASSETTO_CORSA = "assetto_corsa"
-    const val F1 = "f1"
-    const val IRACING = "iracing"
-    const val CUSTOM = "custom"
-
-    val NAMES = linkedMapOf(
-        ASSETTO_CORSA to "Assetto Corsa",
-        F1 to "F1",
-        IRACING to "iRacing"
-    )
-
-    private fun paddle(action: ButtonAction, left: Boolean, label: String) = ButtonLayout(
-        action, if (left) 0.012f else 0.888f, 0.04f, 0.10f, 0.20f, label
-    )
-
-    val ASSETTO_CORSA_LAYOUT = listOf(
-        paddle(ButtonAction.GEAR_DOWN, true, "DN"),
-        paddle(ButtonAction.GEAR_UP, false, "UP"),
-        ButtonLayout(ButtonAction.HANDBRAKE, 0.420f, 0.78f, 0.16f, 0.18f, "HB"),
-        ButtonLayout(ButtonAction.PIT_LIMITER, 0.012f, 0.78f, 0.14f, 0.18f, "PIT"),
-    )
-
-    val F1_LAYOUT = listOf(
-        paddle(ButtonAction.GEAR_DOWN, true, "DN"),
-        paddle(ButtonAction.GEAR_UP, false, "UP"),
-        ButtonLayout(ButtonAction.DRS, 0.420f, 0.04f, 0.16f, 0.18f, "DRS"),
-        ButtonLayout(ButtonAction.PIT_LIMITER, 0.012f, 0.78f, 0.14f, 0.18f, "PIT"),
-    )
-
-    val IRACING_LAYOUT = listOf(
-        paddle(ButtonAction.GEAR_DOWN, true, "DN"),
-        paddle(ButtonAction.GEAR_UP, false, "UP"),
-        ButtonLayout(ButtonAction.HANDBRAKE, 0.420f, 0.78f, 0.16f, 0.18f, "HB"),
-        ButtonLayout(ButtonAction.PIT_LIMITER, 0.012f, 0.78f, 0.14f, 0.18f, "PIT"),
-    )
-
-    fun layoutFor(key: String): List<ButtonLayout> = when (key) {
-        ASSETTO_CORSA -> ASSETTO_CORSA_LAYOUT
-        F1 -> F1_LAYOUT
-        IRACING -> IRACING_LAYOUT
-        else -> ASSETTO_CORSA_LAYOUT
-    }.map { it.copy2() }
-}
-
-/** Persists the user's current free-form layout + active preset name. */
+/** Persists the user's current free-form button layout. */
 class LayoutStore(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("phonewheel_layout", Context.MODE_PRIVATE)
 
-    fun save(layouts: List<ButtonLayout>, presetKey: String) {
+    fun save(layouts: List<ButtonLayout>, nextId: Int) {
         val arr = JSONArray()
         for (b in layouts) {
             arr.put(
                 JSONObject()
-                    .put("action", b.action.id)
+                    .put("id", b.id)
                     .put("x", b.xFrac.toDouble())
                     .put("y", b.yFrac.toDouble())
                     .put("w", b.wFrac.toDouble())
@@ -119,29 +57,29 @@ class LayoutStore(context: Context) {
         }
         prefs.edit {
             putString("layout", arr.toString())
-            putString("preset", presetKey)
+            putInt("nextId", nextId)
         }
     }
 
-    fun load(): Pair<List<ButtonLayout>, String>? {
+    /** Returns the saved buttons plus the next free numeric id to use. */
+    fun load(): Pair<List<ButtonLayout>, Int>? {
         val raw = prefs.getString("layout", null) ?: return null
-        val preset = prefs.getString("preset", Presets.CUSTOM) ?: Presets.CUSTOM
         return try {
             val arr = JSONArray(raw)
             val list = mutableListOf<ButtonLayout>()
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                val action = ButtonAction.byId(o.getString("action")) ?: continue
                 list.add(
                     ButtonLayout(
-                        action,
+                        o.getString("id"),
                         o.getDouble("x").toFloat(), o.getDouble("y").toFloat(),
                         o.getDouble("w").toFloat(), o.getDouble("h").toFloat(),
-                        o.optString("label", action.defaultLabel)
+                        o.optString("label", o.getString("id"))
                     )
                 )
             }
-            if (list.isEmpty()) null else list to preset
+            val nextId = prefs.getInt("nextId", list.size + 1)
+            if (list.isEmpty()) null else list to nextId
         } catch (_: Exception) {
             null
         }
@@ -151,14 +89,16 @@ class LayoutStore(context: Context) {
 /**
  * A single on-screen button. In play mode it's just a momentary press
  * surface (pressed while held). In edit mode it can be dragged anywhere by
- * its body, resized from the bottom-right handle, and removed via long-press.
+ * its body, resized from the bottom-right handle, renamed via tap, and
+ * removed via long-press.
  */
 class CustomButtonView(
     context: Context,
-    var action: ButtonAction,
+    var buttonId: String,
     var labelText: String,
     private val onMoved: () -> Unit,
-    private val onLongPressRemove: (CustomButtonView) -> Unit
+    private val onLongPressRemove: (CustomButtonView) -> Unit,
+    private val onTapRename: (CustomButtonView) -> Unit
 ) : View(context) {
 
     var editMode: Boolean = false
@@ -191,6 +131,7 @@ class CustomButtonView(
 
     private var dragging = false
     private var resizing = false
+    private var moved = false
     private var lastRawX = 0f
     private var lastRawY = 0f
     private val handlePx get() = dp(20f)
@@ -212,7 +153,7 @@ class CustomButtonView(
         else if (pressed) Color.parseColor("#9a8fff") else Color.parseColor("#2a3150")
         canvas.drawRoundRect(RectF(1.5f, 1.5f, w - 1.5f, h - 1.5f), dp(14f), dp(14f), paintBorder)
 
-        paintText.textSize = h * 0.28f
+        paintText.textSize = h * 0.24f
         canvas.drawText(labelText, w / 2f, h / 2f + paintText.textSize * 0.34f, paintText)
 
         if (editMode) {
@@ -240,6 +181,7 @@ class CustomButtonView(
                 val inHandle = event.x > width - handlePx * 1.6f && event.y > height - handlePx * 1.6f
                 resizing = inHandle
                 dragging = !inHandle
+                moved = false
                 lastRawX = event.rawX
                 lastRawY = event.rawY
                 longPressHandler.postDelayed(longPressRunnable, 550)
@@ -248,7 +190,10 @@ class CustomButtonView(
             MotionEvent.ACTION_MOVE -> {
                 val dx = event.rawX - lastRawX
                 val dy = event.rawY - lastRawY
-                if (abs(dx) > 10 || abs(dy) > 10) longPressHandler.removeCallbacks(longPressRunnable)
+                if (abs(dx) > 10 || abs(dy) > 10) {
+                    longPressHandler.removeCallbacks(longPressRunnable)
+                    moved = true
+                }
                 val lp = layoutParams as ViewGroup.MarginLayoutParams
                 val pw = parentView.width.toFloat()
                 val ph = parentView.height.toFloat()
@@ -271,7 +216,9 @@ class CustomButtonView(
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 longPressHandler.removeCallbacks(longPressRunnable)
-                if (dragging || resizing) onMoved()
+                if (dragging || resizing) {
+                    if (moved) onMoved() else onTapRename(this)
+                }
                 dragging = false
                 resizing = false
                 return true
@@ -280,5 +227,5 @@ class CustomButtonView(
         return super.onTouchEvent(event)
     }
 
-    fun toLayout() = ButtonLayout(action, xFrac, yFrac, wFrac, hFrac, labelText)
+    fun toLayout() = ButtonLayout(buttonId, xFrac, yFrac, wFrac, hFrac, labelText)
 }
