@@ -18,6 +18,12 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Restore
+        run: dotnet restore pc-app/PhoneWheelPC.csproj --verbosity normal
+
+      - name: Build (no publish, just compile)
+        run: dotnet build pc-app/PhoneWheelPC.csproj -c Release --verbosity normal
+
       - name: Publish single-file exe
         run: >
           dotnet publish pc-app/PhoneWheelPC.csproj
