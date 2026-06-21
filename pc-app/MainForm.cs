@@ -21,6 +21,8 @@ public class MainForm : Form
     private readonly Dictionary<string, Label> _pressedDots = new();
     private Button _fixAclBtn = new();
     private Label _emptyHint = new();
+    private Button _vjoySetupBtn = new();
+    private Button _vjoyToolsBtn = new();
 
     public MainForm()
     {
@@ -45,8 +47,16 @@ public class MainForm : Form
         Controls.Add(title);
         y += 34;
 
-        _vjoyStatus = new Label { Left = pad, Top = y, Width = 600, Height = 20, Text = "vJoy: …" };
+        _vjoyStatus = new Label { Left = pad, Top = y, Width = 360, Height = 20, Text = "vJoy: …" };
         Controls.Add(_vjoyStatus);
+
+        _vjoySetupBtn = new Button { Left = 370, Top = y - 2, Width = 110, Height = 24, Text = "Настроить vJoy", Visible = false };
+        _vjoySetupBtn.Click += (_, _) => ShowVJoySetupDialog();
+        Controls.Add(_vjoySetupBtn);
+
+        _vjoyToolsBtn = new Button { Left = 484, Top = y - 2, Width = 126, Height = 24, Text = "Инструменты vJoy" };
+        _vjoyToolsBtn.Click += (_, _) => ShowVJoyToolsDialog();
+        Controls.Add(_vjoyToolsBtn);
         y += 22;
 
         Controls.Add(new Label { Left = pad, Top = y + 3, Width = 60, Text = "Режим:" });
@@ -202,15 +212,158 @@ public class MainForm : Form
 
     private void StartUp()
     {
-        var ok = VJoy.Initialize();
-        _vjoyStatus.Text = $"vJoy: {VJoy.StatusMessage}";
-        _vjoyStatus.ForeColor = ok ? Color.SeaGreen : Color.Firebrick;
+        RefreshVJoyStatus();
 
         _connectionManager.StateReceived += OnState;
         _connectionManager.StateChanged += s => UiThread(() => OnConnectionStateChanged(s));
         _connectionManager.Log += msg => UiThread(() => AppendLog(msg));
 
         StartServer();
+    }
+
+    /// <summary>Re-runs vJoy diagnosis and updates the status label + the
+    /// visibility of the "Настроить vJoy" button. Called on startup and
+    /// again after any setup/recovery action so the UI always reflects
+    /// what's actually true, not what we assumed would happen.</summary>
+    private void RefreshVJoyStatus()
+    {
+        var diagnosis = VJoyInstaller.Diagnose();
+        _vjoyStatus.Text = $"vJoy: {VJoy.StatusMessage}";
+        _vjoyStatus.ForeColor = diagnosis == VJoyInstaller.DiagnosisResult.Ready ? Color.SeaGreen : Color.Firebrick;
+        _vjoySetupBtn.Visible = diagnosis != VJoyInstaller.DiagnosisResult.Ready;
+    }
+
+    private void ShowVJoySetupDialog()
+    {
+        var diagnosis = VJoyInstaller.Diagnose();
+        var bundled = VJoyInstaller.BundledInstallerPresent();
+
+        var message = diagnosis switch
+        {
+            VJoyInstaller.DiagnosisResult.DllMissing =>
+                "vJoy не установлен на этом компьютере.\n\nvJoy — виртуальный джойстик-драйвер, через который PhoneWheel передаёт руль/педали/кнопки в игры.",
+            VJoyInstaller.DiagnosisResult.DriverDisabled =>
+                "vJoy установлен, но устройство #1 выключено.\nОткрой 'Configure vJoy' (через меню Пуск) и включи устройство 1 с осями X, Y, Z и хотя бы 8 кнопками.",
+            VJoyInstaller.DiagnosisResult.DeviceUnavailable =>
+                "Устройство vJoy #1 занято другой программой или недоступно.\nЗакрой другие программы, использующие vJoy, и попробуй снова.",
+            _ => "vJoy готов к работе.",
+        };
+
+        var options = bundled
+            ? "Рядом с PhoneWheel.exe найден установщик vJoy — можно запустить его прямо сейчас (потребуется подтверждение Windows)."
+            : $"Скачай официальный установщик vJoy с {VJoyInstaller.DownloadPageUrl} и запусти его, затем нажми 'Проверить снова'.";
+
+        using var dlg = new Form
+        {
+            Text = "Настройка vJoy",
+            Width = 460,
+            Height = bundled ? 260 : 230,
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+        };
+
+        var lbl = new Label { Left = 16, Top = 16, Width = 420, Height = 80, Text = message };
+        dlg.Controls.Add(lbl);
+        var lbl2 = new Label { Left = 16, Top = 100, Width = 420, Height = 50, Text = options, ForeColor = Color.DimGray };
+        dlg.Controls.Add(lbl2);
+
+        var openBtn = new Button { Left = 16, Top = 160, Width = 200, Height = 30, Text = "Открыть страницу загрузки" };
+        openBtn.Click += (_, _) => VJoyInstaller.OpenDownloadPage();
+        dlg.Controls.Add(openBtn);
+
+        if (bundled)
+        {
+            var runBtn = new Button { Left = 226, Top = 160, Width = 200, Height = 30, Text = "Запустить установщик" };
+            runBtn.Click += (_, _) =>
+            {
+                var (launched, msg) = VJoyInstaller.RunBundledInstaller();
+                AppendLog(msg);
+                RefreshVJoyStatus();
+                if (VJoyInstaller.Diagnose() == VJoyInstaller.DiagnosisResult.Ready)
+                {
+                    MessageBox.Show(dlg, "vJoy успешно настроен.", "Готово", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    dlg.Close();
+                }
+            };
+            dlg.Controls.Add(runBtn);
+        }
+
+        var recheckBtn = new Button { Left = 16, Top = 196, Width = 200, Height = 30, Text = "Проверить снова" };
+        recheckBtn.Click += (_, _) =>
+        {
+            RefreshVJoyStatus();
+            if (VJoyInstaller.Diagnose() == VJoyInstaller.DiagnosisResult.Ready)
+            {
+                MessageBox.Show(dlg, "vJoy готов к работе!", "Готово", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                dlg.Close();
+            }
+            else
+            {
+                MessageBox.Show(dlg, VJoy.StatusMessage, "Ещё не готово", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        };
+        dlg.Controls.Add(recheckBtn);
+
+        dlg.ShowDialog(this);
+    }
+
+    private void ShowVJoyToolsDialog()
+    {
+        using var dlg = new Form
+        {
+            Text = "Инструменты vJoy",
+            Width = 520,
+            Height = 420,
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+        };
+
+        var reportBox = new TextBox
+        {
+            Left = 12, Top = 12, Width = 480, Height = 280,
+            Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
+            Font = new Font("Consolas", 8.5f),
+            Text = VJoyInstaller.BuildDiagnosticReport(),
+        };
+        dlg.Controls.Add(reportBox);
+
+        var resetBtn = new Button { Left = 12, Top = 304, Width = 150, Height = 30, Text = "Пересоздать устройство" };
+        resetBtn.Click += (_, _) =>
+        {
+            var (ok, msg) = VJoyInstaller.RecreateDevice();
+            AppendLog(msg);
+            RefreshVJoyStatus();
+            reportBox.Text = VJoyInstaller.BuildDiagnosticReport();
+            MessageBox.Show(dlg, msg, ok ? "Готово" : "Не удалось", MessageBoxButtons.OK,
+                ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        };
+        dlg.Controls.Add(resetBtn);
+
+        var reinstallBtn = new Button { Left = 168, Top = 304, Width = 150, Height = 30, Text = "Переустановить драйвер" };
+        reinstallBtn.Click += (_, _) =>
+        {
+            dlg.Close();
+            ShowVJoySetupDialog();
+        };
+        dlg.Controls.Add(reinstallBtn);
+
+        var copyBtn = new Button { Left = 324, Top = 304, Width = 150, Height = 30, Text = "Скопировать отчёт" };
+        copyBtn.Click += (_, _) =>
+        {
+            try { Clipboard.SetText(reportBox.Text); AppendLog("Диагностический отчёт скопирован в буфер обмена."); }
+            catch { /* ignore clipboard failures */ }
+        };
+        dlg.Controls.Add(copyBtn);
+
+        var refreshBtn = new Button { Left = 12, Top = 344, Width = 150, Height = 30, Text = "Обновить отчёт" };
+        refreshBtn.Click += (_, _) => reportBox.Text = VJoyInstaller.BuildDiagnosticReport();
+        dlg.Controls.Add(refreshBtn);
+
+        dlg.ShowDialog(this);
     }
 
     private void OnConnectionStateChanged(ConnectionState state)
