@@ -16,7 +16,7 @@
          32feet.NET's InTheHand.Net.Bluetooth, which wraps the Win32
          Bluetooth APIs (Winsock RFCOMM sockets + BluetoothAuthenticateDevice
          for pairing) in a plain .NET API surface that works fine here. -->
-    <PackageReference Include="InTheHand.Net.Bluetooth" Version="4.1.40" />
+    <PackageReference Include="InTheHand.Net.Bluetooth" Version="4.0.36" />
   </ItemGroup>
 
 </Project>
