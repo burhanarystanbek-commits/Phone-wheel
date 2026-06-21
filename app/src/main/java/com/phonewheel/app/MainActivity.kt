@@ -16,7 +16,12 @@ import android.os.Looper
 import android.text.InputType
 import android.view.*
 import android.widget.*
-import okhttp3.*
+import com.phonewheel.app.transport.ConnectionManager
+import com.phonewheel.app.transport.ConnectionState
+import com.phonewheel.app.transport.ITransport
+import com.phonewheel.app.transport.TransportKind
+import com.phonewheel.app.transport.WebSocketTransport
+import com.phonewheel.app.transport.BluetoothTransport
 import org.json.JSONObject
 import kotlin.math.*
 
@@ -246,8 +251,7 @@ class MainActivity : Activity(), SensorEventListener {
     private var seq           = 0L
 
     private val handler = Handler(Looper.getMainLooper())
-    private val client  = OkHttpClient.Builder().retryOnConnectionFailure(true).build()
-    private var socket: WebSocket? = null
+    private val connectionManager = ConnectionManager()
 
     private lateinit var gasView:       PedalView
     private lateinit var brakeView:     PedalView
@@ -274,6 +278,7 @@ class MainActivity : Activity(), SensorEventListener {
         layoutStore = LayoutStore(this)
         setupSensors()
         buildUi()
+        setupConnectionCallbacks()
         startSendLoop()
         startUiLoop()
     }
@@ -289,7 +294,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     override fun onDestroy() {
-        socket?.close(1000, "closed")
+        connectionManager.disconnect()
         super.onDestroy()
     }
 
@@ -621,61 +626,87 @@ class MainActivity : Activity(), SensorEventListener {
         ipInput.visibility = if (usb) View.GONE else View.VISIBLE
     }
 
+    /** Builds the concrete transport for whichever kind ConnectionManager
+     *  was asked to switch to. USB and Wi-Fi are both WebSocketTransport —
+     *  only the target URL differs — Bluetooth is its own implementation
+     *  (a not-yet-implemented placeholder for now). */
+    private fun buildTransport(kind: TransportKind): ITransport = when (kind) {
+        TransportKind.USB -> WebSocketTransport(
+            TransportKind.USB,
+            "ws://127.0.0.1:27111/ws",
+            helloPayload = ::buildHello
+        )
+        TransportKind.WIFI -> {
+            val ip = ipInput.text.toString().trim().ifBlank { "127.0.0.1" }
+            WebSocketTransport(TransportKind.WIFI, "ws://$ip:27111/ws", helloPayload = ::buildHello)
+        }
+        TransportKind.BLUETOOTH -> BluetoothTransport()
+    }
+
+    private fun buildHello(): String = JSONObject()
+        .put("type", "hello")
+        .put("name", android.os.Build.MODEL)
+        .put("mode", if (usbMode) "usb" else "wifi")
+        .toString()
+
     private fun connect() {
-        val ip  = ipInput.text.toString().trim().ifBlank { "127.0.0.1" }
-        val url = if (usbMode) "ws://127.0.0.1:27111/ws" else "ws://$ip:27111/ws"
         statusText.text = "Подключение..."
         statusText.setTextColor(Color.parseColor("#ffbe5f"))
-        val req = Request.Builder().url(url).build()
-        socket = client.newWebSocket(req, object : WebSocketListener() {
-            override fun onOpen(ws: WebSocket, response: Response) {
-                connected = true
-                ws.send(JSONObject()
-                    .put("type", "hello")
-                    .put("name", android.os.Build.MODEL)
-                    .put("mode", if (usbMode) "usb" else "wifi")
-                    .toString())
-                runOnUiThread {
-                    statusText.text = "Подключено"
-                    statusText.setTextColor(Color.parseColor("#22dc82"))
-                    connectBtn.text = "Отключить"
-                    connectBtn.setTextColor(Color.parseColor("#22dc82"))
-                    connectBtn.background = roundRect(Color.parseColor("#0e2a1e"), dp(10).toFloat())
-                }
-            }
-            override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                connected = false
-                runOnUiThread {
-                    statusText.text = "Ошибка: ${t.message?.take(28) ?: "?"}"
-                    statusText.setTextColor(Color.parseColor("#ff6060"))
-                    connectBtn.text = "Подключить"
-                    connectBtn.setTextColor(Color.parseColor("#7c6fff"))
-                    connectBtn.background = roundRect(Color.parseColor("#1f2a4a"), dp(10).toFloat())
-                }
-            }
-            override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                connected = false
-                runOnUiThread {
-                    statusText.text = "Отключено"
-                    statusText.setTextColor(Color.parseColor("#ffbe5f"))
-                    connectBtn.text = "Подключить"
-                    connectBtn.setTextColor(Color.parseColor("#7c6fff"))
-                    connectBtn.background = roundRect(Color.parseColor("#1f2a4a"), dp(10).toFloat())
-                }
-            }
-        })
+        val kind = if (usbMode) TransportKind.USB else TransportKind.WIFI
+        connectionManager.switchTo(kind) { k -> buildTransport(k) }
     }
 
     private fun disconnect() {
         connected = false
-        socket?.close(1000, "user")
-        socket = null
+        connectionManager.disconnect()
         statusText.text = "Отключено"
         statusText.setTextColor(Color.parseColor("#ffbe5f"))
         connectBtn.text = "Подключить"
         connectBtn.setTextColor(Color.parseColor("#7c6fff"))
         connectBtn.background = roundRect(Color.parseColor("#1f2a4a"), dp(10).toFloat())
     }
+
+    /** Wires ConnectionManager's transport-agnostic callbacks to the same UI
+     *  updates connect()'s old WebSocketListener used to do inline — now
+     *  shared by every transport instead of duplicated per-transport. */
+    private fun setupConnectionCallbacks() {
+        connectionManager.setOnStateChanged { state ->
+            runOnUiThread {
+                when (state) {
+                    ConnectionState.CONNECTED -> {
+                        connected = true
+                        statusText.text = "Подключено"
+                        statusText.setTextColor(Color.parseColor("#22dc82"))
+                        connectBtn.text = "Отключить"
+                        connectBtn.setTextColor(Color.parseColor("#22dc82"))
+                        connectBtn.background = roundRect(Color.parseColor("#0e2a1e"), dp(10).toFloat())
+                    }
+                    ConnectionState.ERROR -> {
+                        connected = false
+                        statusText.text = "Ошибка соединения"
+                        statusText.setTextColor(Color.parseColor("#ff6060"))
+                        connectBtn.text = "Подключить"
+                        connectBtn.setTextColor(Color.parseColor("#7c6fff"))
+                        connectBtn.background = roundRect(Color.parseColor("#1f2a4a"), dp(10).toFloat())
+                    }
+                    ConnectionState.DISCONNECTED -> {
+                        connected = false
+                        statusText.text = "Отключено"
+                        statusText.setTextColor(Color.parseColor("#ffbe5f"))
+                        connectBtn.text = "Подключить"
+                        connectBtn.setTextColor(Color.parseColor("#7c6fff"))
+                        connectBtn.background = roundRect(Color.parseColor("#1f2a4a"), dp(10).toFloat())
+                    }
+                    ConnectionState.CONNECTING, ConnectionState.RECONNECTING -> {
+                        statusText.text = "Подключение..."
+                        statusText.setTextColor(Color.parseColor("#ffbe5f"))
+                    }
+                }
+            }
+        }
+        connectionManager.setOnLog { _, _ -> /* could surface to a log panel later */ }
+    }
+
 
     private fun startSendLoop() {
         handler.post(object : Runnable {
@@ -692,7 +723,7 @@ class MainActivity : Activity(), SensorEventListener {
                             buttons.put(cb.buttonId, cb.pressed)
                             labels.put(cb.buttonId, cb.labelText)
                         }
-                        socket?.send(JSONObject()
+                        connectionManager.send(JSONObject()
                             .put("type",     "state")
                             .put("seq",      seq++)
                             .put("steer",    steer.toDouble())
