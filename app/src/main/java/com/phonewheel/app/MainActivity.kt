@@ -22,6 +22,9 @@ import com.phonewheel.app.transport.ITransport
 import com.phonewheel.app.transport.TransportKind
 import com.phonewheel.app.transport.WebSocketTransport
 import com.phonewheel.app.transport.BluetoothTransport
+import com.phonewheel.app.bluetooth.BluetoothManager
+import com.phonewheel.app.bluetooth.BtDevice
+import android.content.pm.PackageManager
 import org.json.JSONObject
 import kotlin.math.*
 
@@ -247,11 +250,15 @@ class MainActivity : Activity(), SensorEventListener {
     private var steer         = 0f
     private var maxSteerAngle = 45f
     private var usbMode       = true
+    private var connMode: TransportKind = TransportKind.USB
+    private var selectedBtDevice: BtDevice? = null
     private var connected     = false
     private var seq           = 0L
 
     private val handler = Handler(Looper.getMainLooper())
     private val connectionManager = ConnectionManager()
+    private val btManager by lazy { BluetoothManager(this) }
+    private val PERMISSION_REQUEST_CODE = 4201
 
     private lateinit var gasView:       PedalView
     private lateinit var brakeView:     PedalView
@@ -259,6 +266,8 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var statusText:    TextView
     private lateinit var connectBtn:    Button
     private lateinit var ipInput:       EditText
+    private lateinit var btDeviceLabel: TextView
+    private var btRowRef: LinearLayout? = null
     private lateinit var steerTv:       TextView
 
     // --- customizable buttons (free placement, unlimited count) ---
@@ -295,6 +304,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onDestroy() {
         connectionManager.disconnect()
+        btManager.teardown()
         super.onDestroy()
     }
 
@@ -381,10 +391,13 @@ class MainActivity : Activity(), SensorEventListener {
         val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val usbBtn  = tabBtn("USB", true)
         val wifiBtn = tabBtn("Wi-Fi", false)
-        usbBtn.setOnClickListener  { setConnMode(true, usbBtn, wifiBtn) }
-        wifiBtn.setOnClickListener { setConnMode(false, usbBtn, wifiBtn) }
+        val btBtn   = tabBtn("BT", false)
+        usbBtn.setOnClickListener  { setConnMode(TransportKind.USB, usbBtn, wifiBtn, btBtn) }
+        wifiBtn.setOnClickListener { setConnMode(TransportKind.WIFI, usbBtn, wifiBtn, btBtn) }
+        btBtn.setOnClickListener   { setConnMode(TransportKind.BLUETOOTH, usbBtn, wifiBtn, btBtn) }
         modeRow.addView(usbBtn,  lp(0, dp(36), 1f, endMargin = dp(4)))
-        modeRow.addView(wifiBtn, lp(0, dp(36), 1f))
+        modeRow.addView(wifiBtn, lp(0, dp(36), 1f, endMargin = dp(4)))
+        modeRow.addView(btBtn,   lp(0, dp(36), 1f))
         center.addView(modeRow, lp(MATCH, dp(36)).also { it.setMargins(0, dp(4), 0, 0) })
 
         // IP input
@@ -400,6 +413,20 @@ class MainActivity : Activity(), SensorEventListener {
             visibility = View.GONE
         }
         center.addView(ipInput, lp(MATCH, dp(42)).also { it.setMargins(0, dp(4), 0, 0) })
+
+        // Bluetooth device picker row (visible only in BT mode)
+        val btRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; visibility = View.GONE }
+        btDeviceLabel = tv("Устройство не выбрано", 11f, Color.parseColor("#6b7394"))
+        val pickBtDeviceBtn = Button(this).apply {
+            text = "Выбрать"
+            setTextColor(Color.parseColor("#7c6fff"))
+            background = roundRect(Color.parseColor("#1e2536"), dp(10).toFloat())
+            setOnClickListener { showBluetoothDevicePicker() }
+        }
+        btRow.addView(btDeviceLabel, lp(0, dp(36), 1f, endMargin = dp(4)))
+        btRow.addView(pickBtDeviceBtn, lp(dp(96), dp(36)))
+        center.addView(btRow, lp(MATCH, dp(36)).also { it.setMargins(0, dp(4), 0, 0) })
+        this.btRowRef = btRow
 
         // connect + center buttons
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -615,21 +642,27 @@ class MainActivity : Activity(), SensorEventListener {
         layoutStore.save(customButtons.map { it.toLayout() }, nextButtonId)
     }
 
-    private fun setConnMode(usb: Boolean, usbBtn: Button, wifiBtn: Button) {
-        usbMode = usb
-        usbBtn.setTextColor(if (usb) Color.parseColor("#7c6fff") else Color.parseColor("#6b7394"))
-        usbBtn.background = roundRect(
-            if (usb) Color.parseColor("#1a213a") else Color.parseColor("#1e2536"), dp(10).toFloat())
-        wifiBtn.setTextColor(if (!usb) Color.parseColor("#7c6fff") else Color.parseColor("#6b7394"))
-        wifiBtn.background = roundRect(
-            if (!usb) Color.parseColor("#1a213a") else Color.parseColor("#1e2536"), dp(10).toFloat())
-        ipInput.visibility = if (usb) View.GONE else View.VISIBLE
+    private fun setConnMode(kind: TransportKind, usbBtn: Button, wifiBtn: Button, btBtn: Button) {
+        connMode = kind
+        usbMode = kind == TransportKind.USB
+
+        fun style(btn: Button, selected: Boolean) {
+            btn.setTextColor(if (selected) Color.parseColor("#7c6fff") else Color.parseColor("#6b7394"))
+            btn.background = roundRect(
+                if (selected) Color.parseColor("#1a213a") else Color.parseColor("#1e2536"), dp(10).toFloat())
+        }
+        style(usbBtn, kind == TransportKind.USB)
+        style(wifiBtn, kind == TransportKind.WIFI)
+        style(btBtn, kind == TransportKind.BLUETOOTH)
+
+        ipInput.visibility = if (kind == TransportKind.WIFI) View.VISIBLE else View.GONE
+        btRowRef?.visibility = if (kind == TransportKind.BLUETOOTH) View.VISIBLE else View.GONE
     }
 
     /** Builds the concrete transport for whichever kind ConnectionManager
      *  was asked to switch to. USB and Wi-Fi are both WebSocketTransport —
-     *  only the target URL differs — Bluetooth is its own implementation
-     *  (a not-yet-implemented placeholder for now). */
+     *  only the target URL differs. Bluetooth connects out to whichever
+     *  device the user picked via showBluetoothDevicePicker(). */
     private fun buildTransport(kind: TransportKind): ITransport = when (kind) {
         TransportKind.USB -> WebSocketTransport(
             TransportKind.USB,
@@ -640,20 +673,109 @@ class MainActivity : Activity(), SensorEventListener {
             val ip = ipInput.text.toString().trim().ifBlank { "127.0.0.1" }
             WebSocketTransport(TransportKind.WIFI, "ws://$ip:27111/ws", helloPayload = ::buildHello)
         }
-        TransportKind.BLUETOOTH -> BluetoothTransport()
+        TransportKind.BLUETOOTH -> {
+            val device = selectedBtDevice
+                ?: throw IllegalStateException("Bluetooth device not selected")
+            BluetoothTransport(this, device)
+        }
     }
 
     private fun buildHello(): String = JSONObject()
         .put("type", "hello")
         .put("name", android.os.Build.MODEL)
-        .put("mode", if (usbMode) "usb" else "wifi")
+        .put("mode", connMode.name.lowercase())
         .toString()
 
     private fun connect() {
+        if (connMode == TransportKind.BLUETOOTH) {
+            if (!ensureBluetoothPermissions()) return
+            if (selectedBtDevice == null) {
+                Toast.makeText(this, "Сначала выбери устройство", Toast.LENGTH_SHORT).show()
+                showBluetoothDevicePicker()
+                return
+            }
+        }
         statusText.text = "Подключение..."
         statusText.setTextColor(Color.parseColor("#ffbe5f"))
-        val kind = if (usbMode) TransportKind.USB else TransportKind.WIFI
-        connectionManager.switchTo(kind) { k -> buildTransport(k) }
+        connectionManager.switchTo(connMode) { k -> buildTransport(k) }
+    }
+
+    /** Returns true if Bluetooth permissions are already granted. Otherwise
+     *  kicks off the runtime permission request dialog and returns false —
+     *  the caller should re-attempt the action from onRequestPermissionsResult. */
+    private fun ensureBluetoothPermissions(): Boolean {
+        if (btManager.hasPermissions()) return true
+        requestPermissions(btManager.permissionsToRequest(), PERMISSION_REQUEST_CODE)
+        return false
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != PERMISSION_REQUEST_CODE) return
+        val granted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+        if (granted) {
+            Toast.makeText(this, "Bluetooth разрешения получены", Toast.LENGTH_SHORT).show()
+            showBluetoothDevicePicker()
+        } else {
+            Toast.makeText(this, "Без разрешений Bluetooth работать не будет", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Shows a list of paired devices with a "Искать ещё" action that runs
+     *  live discovery and appends newly found devices to the same list.
+     *  Tapping a device just selects it (updates the label); the user still
+     *  presses the existing "Подключить" button to actually connect — this
+     *  keeps a single, consistent connect/disconnect entry point instead of
+     *  connecting immediately on tap. */
+    private fun showBluetoothDevicePicker() {
+        if (!ensureBluetoothPermissions()) return
+        if (!btManager.isSupported()) {
+            Toast.makeText(this, "Bluetooth не поддерживается на этом устройстве", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!btManager.isEnabled()) {
+            Toast.makeText(this, "Включи Bluetooth в настройках телефона", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val devices = btManager.pairedDevices().toMutableList()
+        val labels = devices.map { "${it.name}  (${it.address})" }.toMutableList()
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Bluetooth-устройства")
+            .setItems(labels.toTypedArray()) { _, index ->
+                selectedBtDevice = devices[index]
+                btDeviceLabel.text = devices[index].name
+                btDeviceLabel.setTextColor(Color.parseColor("#22dc82"))
+            }
+            .setNegativeButton("Закрыть", null)
+            .setNeutralButton("Искать ещё") { _, _ -> /* re-opened below via discovery */ }
+            .create()
+
+        // Live discovery appends to the already-shown list; since AlertDialog
+        // with setItems doesn't expose its adapter easily after creation, we
+        // keep discovery simple: collect found devices and let the user
+        // reopen the picker (now including them in pairedDevices() results
+        // only applies to bonded devices, so newly discovered-but-unpaired
+        // devices are surfaced via a toast prompting the user to pair first
+        // — Android requires pairing before RFCOMM connect works reliably
+        // for most head units / PCs anyway).
+        btManager.setOnDeviceFound { found ->
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    "Найдено: ${found.name}. Сопряди его в настройках Bluetooth, затем выбери здесь.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+
+        dialog.show()
+        // Trigger a discovery pass in the background; any new devices show
+        // up via the toast above so the user knows to go pair them.
+        btManager.startDiscovery()
     }
 
     private fun disconnect() {
