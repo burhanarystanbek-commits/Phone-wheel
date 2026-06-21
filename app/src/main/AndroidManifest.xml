@@ -1,7 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
+    <!-- Legacy Bluetooth permissions, required on Android 11 (API 30) and below.
+         maxSdkVersion=30 means these are not requested/granted on API 31+, where
+         the new BLUETOOTH_CONNECT/BLUETOOTH_SCAN permissions below apply instead. -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30"/>
+
+    <!-- Pre-Android 12 also requires a location permission to perform
+         Bluetooth *discovery* (not needed just to connect to an already
+         paired device). We only declare COARSE here since that's sufficient
+         for Bluetooth scanning and we don't otherwise need the user's
+         precise location for anything in this app. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
+        android:maxSdkVersion="30"/>
+
+    <!-- Android 12+ (API 31+) runtime-requestable Bluetooth permissions.
+         BLUETOOTH_SCAN: needed to discover nearby devices.
+         BLUETOOTH_CONNECT: needed to connect to / communicate with a paired device.
+         neverForLocation on BLUETOOTH_SCAN tells the system we are not using
+         scan results to derive the user's physical location, which means we
+         do NOT also need ACCESS_FINE_LOCATION on API 31+. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="31"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false"/>
+
     <application
         android:allowBackup="true"
         android:label="@string/app_name"
