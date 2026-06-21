@@ -379,8 +379,13 @@ public class MainForm : Form
                 _phoneStatus.ForeColor = Color.DarkOrange;
                 break;
             case ConnectionState.Connecting:
-            case ConnectionState.Reconnecting:
                 _phoneStatus.Text = "Телефон: подключение...";
+                _phoneStatus.ForeColor = Color.DarkOrange;
+                break;
+            case ConnectionState.Reconnecting:
+                _phoneStatus.Text = _connectionManager.ActiveKind == TransportKind.Bluetooth
+                    ? "Телефон: отключился, жду переподключения по Bluetooth..."
+                    : "Телефон: переподключение...";
                 _phoneStatus.ForeColor = Color.DarkOrange;
                 break;
             case ConnectionState.Error:
@@ -425,10 +430,12 @@ public class MainForm : Form
     {
         if (kind == TransportKind.Bluetooth)
         {
-            _serverStatus.Text = "Сервер: режим Bluetooth ещё не реализован в этой версии";
-            _serverStatus.ForeColor = Color.DarkOrange;
+            _serverStatus.Text = started
+                ? $"Сервер: Bluetooth ожидает подключение (UUID {BluetoothServer.ServiceUuid})"
+                : "Сервер: Bluetooth недоступен — проверь, что адаптер включен в Windows";
+            _serverStatus.ForeColor = started ? Color.SeaGreen : Color.Firebrick;
             _fixAclBtn.Visible = false;
-            _connectionKindLabel.Text = "";
+            _connectionKindLabel.Text = started ? "" : "Включи Bluetooth в Windows и переключи режим ещё раз.";
             return;
         }
 
