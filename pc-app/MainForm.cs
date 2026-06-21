@@ -1,11 +1,14 @@
 using System.Text.Json;
+using PhoneWheelPC.Transport;
 
 namespace PhoneWheelPC;
 
 public class MainForm : Form
 {
-    private readonly WsServer _server = new();
+    private readonly ConnectionManager _connectionManager = new();
     private Mapping _mapping = Mapping.LoadOrDefault();
+    private ComboBox _modeSelector = new();
+    private Label _connectionKindLabel = new();
 
     private Label _vjoyStatus = new();
     private Label _serverStatus = new();
@@ -30,7 +33,7 @@ public class MainForm : Form
         BuildUi();
 
         Load += (_, _) => StartUp();
-        FormClosing += (_, _) => { _server.Stop(); VJoy.Shutdown(); };
+        FormClosing += (_, _) => { _connectionManager.Dispose(); VJoy.Shutdown(); };
     }
 
     private void BuildUi()
@@ -46,13 +49,24 @@ public class MainForm : Form
         Controls.Add(_vjoyStatus);
         y += 22;
 
+        Controls.Add(new Label { Left = pad, Top = y + 3, Width = 60, Text = "Режим:" });
+        _modeSelector = new ComboBox { Left = pad + 60, Top = y, Width = 140, DropDownStyle = ComboBoxStyle.DropDownList };
+        _modeSelector.Items.AddRange(new object[] { "Wi-Fi", "USB", "Bluetooth" });
+        _modeSelector.SelectedIndex = 0;
+        _modeSelector.SelectedIndexChanged += (_, _) => SwitchMode();
+        Controls.Add(_modeSelector);
+
+        _connectionKindLabel = new Label { Left = pad + 210, Top = y + 3, Width = 380, Text = "" };
+        Controls.Add(_connectionKindLabel);
+        y += 26;
+
         _serverStatus = new Label { Left = pad, Top = y, Width = 480, Height = 20, Text = "Сервер: …" };
         Controls.Add(_serverStatus);
 
         _fixAclBtn = new Button { Left = 500, Top = y - 2, Width = 110, Height = 24, Text = "Настроить доступ", Visible = false };
         _fixAclBtn.Click += (_, _) =>
         {
-            if (WsServer.TryFixUrlAcl())
+            if (WebSocketTransport.TryFixUrlAcl())
             {
                 AppendLog("Права настроены, перезапускаю сервер...");
                 StartServer();
@@ -70,6 +84,10 @@ public class MainForm : Form
         {
             var (ok, message) = AdbHelper.SetupReverse();
             AppendLog(message);
+            if (ok && _modeSelector.SelectedItem as string != "USB")
+            {
+                _modeSelector.SelectedItem = "USB"; // triggers SwitchMode via event
+            }
         };
         Controls.Add(usbBtn);
         y += 32;
@@ -188,29 +206,83 @@ public class MainForm : Form
         _vjoyStatus.Text = $"vJoy: {VJoy.StatusMessage}";
         _vjoyStatus.ForeColor = ok ? Color.SeaGreen : Color.Firebrick;
 
-        _server.StateReceived += OnState;
-        _server.ClientConnected += addr => UiThread(() =>
-        {
-            _phoneStatus.Text = $"Телефон: подключен ({addr})";
-            _phoneStatus.ForeColor = Color.SeaGreen;
-        });
-        _server.ClientDisconnected += () => UiThread(() =>
-        {
-            _phoneStatus.Text = "Телефон: не подключен";
-            _phoneStatus.ForeColor = Color.DarkOrange;
-        });
-        _server.Log += msg => UiThread(() => AppendLog(msg));
+        _connectionManager.StateReceived += OnState;
+        _connectionManager.StateChanged += s => UiThread(() => OnConnectionStateChanged(s));
+        _connectionManager.Log += msg => UiThread(() => AppendLog(msg));
 
         StartServer();
     }
 
+    private void OnConnectionStateChanged(ConnectionState state)
+    {
+        switch (state)
+        {
+            case ConnectionState.Connected:
+                _phoneStatus.Text = $"Телефон: подключен ({_connectionManager.PeerDescription})";
+                _phoneStatus.ForeColor = Color.SeaGreen;
+                break;
+            case ConnectionState.Listening:
+                _phoneStatus.Text = "Телефон: не подключен (ожидание)";
+                _phoneStatus.ForeColor = Color.DarkOrange;
+                break;
+            case ConnectionState.Connecting:
+            case ConnectionState.Reconnecting:
+                _phoneStatus.Text = "Телефон: подключение...";
+                _phoneStatus.ForeColor = Color.DarkOrange;
+                break;
+            case ConnectionState.Error:
+                _phoneStatus.Text = "Телефон: ошибка соединения";
+                _phoneStatus.ForeColor = Color.Firebrick;
+                break;
+            default:
+                _phoneStatus.Text = "Телефон: не подключен";
+                _phoneStatus.ForeColor = Color.DarkOrange;
+                break;
+        }
+    }
+
+    /// <summary>Starts the transport matching whatever is currently selected
+    /// in the mode dropdown (defaults to Wi-Fi on first launch). Both Wi-Fi
+    /// and USB use the same WebSocketTransport/port — selecting between them
+    /// is purely informational until Bluetooth (a genuinely different
+    /// transport) is selected.</summary>
     private void StartServer()
     {
-        _server.Stop();
-        var started = _server.Start();
+        var kind = SelectedKind();
+        var started = _connectionManager.SwitchTo(kind);
+        UpdateServerStatusUi(kind, started);
+    }
+
+    private void SwitchMode()
+    {
+        var kind = SelectedKind();
+        AppendLog($"Переключение на режим: {_modeSelector.SelectedItem}");
+        var started = _connectionManager.SwitchTo(kind);
+        UpdateServerStatusUi(kind, started);
+    }
+
+    private TransportKind SelectedKind() => (_modeSelector.SelectedItem as string) switch
+    {
+        "USB" => TransportKind.Usb,
+        "Bluetooth" => TransportKind.Bluetooth,
+        _ => TransportKind.WiFi,
+    };
+
+    private void UpdateServerStatusUi(TransportKind kind, bool started)
+    {
+        if (kind == TransportKind.Bluetooth)
+        {
+            _serverStatus.Text = "Сервер: режим Bluetooth ещё не реализован в этой версии";
+            _serverStatus.ForeColor = Color.DarkOrange;
+            _fixAclBtn.Visible = false;
+            _connectionKindLabel.Text = "";
+            return;
+        }
+
         if (started)
         {
-            _serverStatus.Text = $"Сервер: слушает порт {WsServer.Port} (Wi-Fi и USB через adb reverse)";
+            _serverStatus.Text = $"Сервер: слушает порт {WsServer.Port}"
+                + (kind == TransportKind.Usb ? " (через adb reverse)" : " (Wi-Fi, LAN)");
             _serverStatus.ForeColor = Color.SeaGreen;
             _fixAclBtn.Visible = false;
         }
@@ -263,7 +335,7 @@ public class MainForm : Form
         }
 
         UiThread(() => _liveValues.Text =
-            $"Руль: {state.Steer:+0.00;-0.00}   Газ: {state.Throttle * 100:0}%   Тормоз: {state.Brake * 100:0}%");
+            $"Руль: {state.Steer:+0.00;-0.00}   Газ: {state.Throttle * 100:0}%   Тормоз: {state.Brake * 100:0}%   ({_connectionManager.PacketRateHz} Гц)");
     }
 
     private void AppendLog(string msg)
