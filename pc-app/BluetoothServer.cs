@@ -27,9 +27,15 @@ public class BluetoothServer
 
     /// <summary>Returns false if no Bluetooth radio / stack is available on
     /// this PC, by trying to create an AF_BTH socket as the probe.</summary>
-    public bool IsRadioPresent =>
-        Win32Bluetooth.TryCreateRfcommSocket(out var s, out _) &&
-        (s?.Close() == null || true); // always true if probe succeeds
+    public bool IsRadioPresent
+    {
+        get
+        {
+            var ok = Win32Bluetooth.TryCreateRfcommSocket(out var s, out _);
+            s?.Dispose();
+            return ok;
+        }
+    }
 
     public bool Start()
     {
