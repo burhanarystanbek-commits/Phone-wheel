@@ -24,11 +24,24 @@ public class MainForm : Form
     private Button _vjoySetupBtn = new();
     private Button _vjoyToolsBtn = new();
 
+    // Dashboard labels
+    private Label _dashMode       = new();
+    private Label _dashPeer       = new();
+    private Label _dashPing       = new();
+    private Label _dashRate       = new();
+    private Label _dashUptime     = new();
+    private Label _dashSteer      = new();
+    private Label _dashThrottle   = new();
+    private Label _dashBrake      = new();
+    private Label _dashVjoyState  = new();
+    private Panel _pingDot        = new();
+    private System.Windows.Forms.Timer _dashTimer = new();
+
     public MainForm()
     {
         Text = "PhoneWheel — PC App";
-        Width = 640;
-        Height = 680;
+        Width = 820;
+        Height = 780;
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9f);
 
@@ -70,7 +83,7 @@ public class MainForm : Form
         Controls.Add(_connectionKindLabel);
         y += 26;
 
-        _serverStatus = new Label { Left = pad, Top = y, Width = 480, Height = 20, Text = "Сервер: …" };
+        _serverStatus = new Label { Left = pad, Top = y, Width = 780, Height = 20, Text = "Сервер: …" };
         Controls.Add(_serverStatus);
 
         _fixAclBtn = new Button { Left = 500, Top = y - 2, Width = 110, Height = 24, Text = "Настроить доступ", Visible = false };
@@ -102,21 +115,67 @@ public class MainForm : Form
         Controls.Add(usbBtn);
         y += 32;
 
-        _phoneStatus = new Label { Left = pad, Top = y, Width = 600, Height = 20, Text = "Телефон: не подключен", ForeColor = Color.DarkOrange };
+        _phoneStatus = new Label { Left = pad, Top = y, Width = 780, Height = 20, Text = "Телефон: не подключен", ForeColor = Color.DarkOrange };
         Controls.Add(_phoneStatus);
         y += 22;
 
-        _liveValues = new Label { Left = pad, Top = y, Width = 600, Height = 20, Text = "Руль: 0   Газ: 0%   Тормоз: 0%" };
+        _liveValues = new Label { Left = pad, Top = y, Width = 780, Height = 18, Text = "" };
         Controls.Add(_liveValues);
-        y += 30;
+        y += 22;
 
-        var hint = new Label { Left = pad, Top = y, Width = 600, Height = 34, ForeColor = Color.Gray, Text = Mapping.GameHint };
+        // ─── Dashboard panel ───────────────────────────────────────────
+        var dash = new Panel
+        {
+            Left = pad, Top = y, Width = 790, Height = 110,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = Color.FromArgb(245, 245, 245),
+        };
+        Controls.Add(dash);
+
+        // Helper: column-based label pair
+        int col1 = 8, col2 = 150, col3 = 300, col4 = 450, col5 = 600;
+        int row1 = 6, row2 = 30, row3 = 54, row4 = 78;
+
+        Label DL(string text, int x, int y2, bool bold = false, Color? col = null) {
+            var l = new Label {
+                Left = x, Top = y2, AutoSize = true,
+                Text = text,
+                ForeColor = col ?? Color.FromArgb(80, 80, 80),
+                Font = bold ? new Font(Font, FontStyle.Bold) : Font,
+            };
+            dash.Controls.Add(l);
+            return l;
+        }
+
+        DL("ПОДКЛЮЧЕНИЕ", col1, row1, bold: true);
+        DL("Режим:",   col1, row2); _dashMode    = DL("—", col1+64, row2, col: Color.DimGray);
+        DL("Устройство:", col1, row3); _dashPeer = DL("—", col1+78, row3, col: Color.DimGray);
+        DL("Время:",   col1, row4); _dashUptime  = DL("—", col1+44, row4, col: Color.DimGray);
+
+        DL("ПИНГ / ПАКЕТЫ", col3, row1, bold: true);
+        DL("Пинг:",    col3, row2);
+        _pingDot = new Panel { Left = col3+44, Top = row2+2, Width = 12, Height = 12, BackColor = Color.LightGray };
+        dash.Controls.Add(_pingDot);
+        _dashPing  = DL("—", col3+62, row2, col: Color.DimGray);
+        DL("Частота:", col3, row3); _dashRate    = DL("—", col3+56, row3, col: Color.DimGray);
+
+        DL("КОНТРОЛЛЕР", col2, row1, bold: true);
+        DL("Руль:",     col2, row2); _dashSteer    = DL("—", col2+40, row2, col: Color.DimGray);
+        DL("Газ:",      col2, row3); _dashThrottle = DL("—", col2+28, row3, col: Color.DimGray);
+        DL("Тормоз:",   col2, row4); _dashBrake    = DL("—", col2+56, row4, col: Color.DimGray);
+
+        DL("vJOY", col4, row1, bold: true);
+        _dashVjoyState = DL("—", col4, row2, col: Color.DimGray);
+
+        y += 118;
+
+        var hint = new Label { Left = pad, Top = y, Width = 780, Height = 20, ForeColor = Color.Gray, Text = Mapping.GameHint };
         Controls.Add(hint);
-        y += 40;
+        y += 26;
 
         Controls.Add(new Label
         {
-            Left = pad, Top = y, Width = 600,
+            Left = pad, Top = y, Width = 780,
             Text = "Кнопки телефона → номер кнопки vJoy и название (привяжи номер в настройках управления игры):",
             Font = new Font(Font, FontStyle.Bold)
         });
@@ -124,7 +183,7 @@ public class MainForm : Form
 
         _emptyHint = new Label
         {
-            Left = pad, Top = y, Width = 600, Height = 40,
+            Left = pad, Top = y, Width = 780, Height = 40,
             ForeColor = Color.Gray,
             Text = "Кнопки появятся здесь автоматически, как только добавишь их на телефоне\n(значок ⚙ → + Добавить кнопку)."
         };
@@ -132,7 +191,7 @@ public class MainForm : Form
 
         _mappingPanel = new FlowLayoutPanel
         {
-            Left = pad, Top = y, Width = 600, Height = 220,
+            Left = pad, Top = y, Width = 790, Height = 200,
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false,
             AutoScroll = true,
@@ -155,10 +214,10 @@ public class MainForm : Form
         Controls.Add(clearBtn);
         y += 40;
 
-        Controls.Add(new Label { Left = pad, Top = y, Width = 600, Text = "Журнал:", Font = new Font(Font, FontStyle.Bold) });
+        Controls.Add(new Label { Left = pad, Top = y, Width = 780, Text = "Журнал:", Font = new Font(Font, FontStyle.Bold) });
         y += 20;
 
-        _logBox = new TextBox { Left = pad, Top = y, Width = 600, Height = 70, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical };
+        _logBox = new TextBox { Left = pad, Top = y, Width = 790, Height = 70, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical };
         Controls.Add(_logBox);
 
         RefreshMappingPanel();
@@ -180,7 +239,7 @@ public class MainForm : Form
         foreach (var id in ids)
         {
             var entry = _mapping.Entries[id];
-            var row = new Panel { Width = 570, Height = 32, Margin = new Padding(2) };
+            var row = new Panel { Width = 760, Height = 32, Margin = new Padding(2) };
 
             var dot = new Label
             {
@@ -215,8 +274,25 @@ public class MainForm : Form
         RefreshVJoyStatus();
 
         _connectionManager.StateReceived += OnState;
-        _connectionManager.StateChanged += s => UiThread(() => OnConnectionStateChanged(s));
+        _connectionManager.StateChanged += s => UiThread(() =>
+        {
+            OnConnectionStateChanged(s);
+            UpdateDashboardConnection();
+        });
         _connectionManager.Log += msg => UiThread(() => AppendLog(msg));
+        _connectionManager.PacketRateChanged += hz => UiThread(() =>
+        {
+            _dashRate.Text = $"{hz} Гц";
+        });
+        _connectionManager.LatencyChanged += ms => UiThread(() =>
+        {
+            UpdatePingDot(ms);
+        });
+
+        // Dashboard refresh timer — uptime ticks every second.
+        _dashTimer.Interval = 1000;
+        _dashTimer.Tick += (_, _) => UiThread(UpdateDashboardConnection);
+        _dashTimer.Start();
 
         StartServer();
     }
@@ -231,6 +307,10 @@ public class MainForm : Form
         _vjoyStatus.Text = $"vJoy: {VJoy.StatusMessage}";
         _vjoyStatus.ForeColor = diagnosis == VJoyInstaller.DiagnosisResult.Ready ? Color.SeaGreen : Color.Firebrick;
         _vjoySetupBtn.Visible = diagnosis != VJoyInstaller.DiagnosisResult.Ready;
+        _dashVjoyState.Text = diagnosis == VJoyInstaller.DiagnosisResult.Ready
+            ? "Готов ✓" : VJoy.StatusMessage;
+        _dashVjoyState.ForeColor = diagnosis == VJoyInstaller.DiagnosisResult.Ready
+            ? Color.SeaGreen : Color.Firebrick;
     }
 
     private void ShowVJoySetupDialog()
@@ -324,7 +404,7 @@ public class MainForm : Form
 
         var reportBox = new TextBox
         {
-            Left = 12, Top = 12, Width = 480, Height = 280,
+            Left = 12, Top = 12, Width = 780, Height = 280,
             Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
             Font = new Font("Consolas", 8.5f),
             Text = VJoyInstaller.BuildDiagnosticReport(),
@@ -494,8 +574,51 @@ public class MainForm : Form
             }
         }
 
-        UiThread(() => _liveValues.Text =
-            $"Руль: {state.Steer:+0.00;-0.00}   Газ: {state.Throttle * 100:0}%   Тормоз: {state.Brake * 100:0}%   ({_connectionManager.PacketRateHz} Гц)");
+        UiThread(() =>
+        {
+            _dashSteer.Text    = $"{state.Steer:+0.00;-0.00}";
+            _dashThrottle.Text = $"{state.Throttle * 100:0}%";
+            _dashBrake.Text    = $"{state.Brake * 100:0}%";
+            _liveValues.Text   = $"Руль {state.Steer:+0.00;-0.00}   Газ {state.Throttle * 100:0}%   Тормоз {state.Brake * 100:0}%";
+        });
+    }
+
+    private void UpdateDashboardConnection()
+    {
+        var state = _connectionManager.State;
+        var kind  = _connectionManager.ActiveKind;
+
+        _dashMode.Text = kind switch
+        {
+            TransportKind.WiFi      => "Wi-Fi",
+            TransportKind.Usb       => "USB",
+            TransportKind.Bluetooth => "Bluetooth",
+            _ => "—",
+        };
+        _dashMode.ForeColor = state == ConnectionState.Connected ? Color.SeaGreen
+            : state == ConnectionState.Listening  ? Color.DarkOrange
+            : Color.DimGray;
+
+        _dashPeer.Text = state == ConnectionState.Connected
+            ? (_connectionManager.PeerDescription ?? "—")
+            : (state == ConnectionState.Listening ? "ожидание..." : "не подключен");
+        _dashPeer.ForeColor = state == ConnectionState.Connected ? Color.SeaGreen : Color.DimGray;
+
+        _dashUptime.Text = _connectionManager.ConnectedDurationString;
+    }
+
+    private void UpdatePingDot(int ms)
+    {
+        _dashPing.Text = ms < 0 ? "—" : $"{ms} мс";
+        _pingDot.BackColor = ms < 0      ? Color.LightGray
+            : ms < 20  ? Color.LimeGreen
+            : ms < 50  ? Color.YellowGreen
+            : ms < 100 ? Color.Orange
+            : Color.OrangeRed;
+        _dashPing.ForeColor = ms < 0 ? Color.DimGray
+            : ms < 50  ? Color.SeaGreen
+            : ms < 100 ? Color.DarkOrange
+            : Color.Firebrick;
     }
 
     private void AppendLog(string msg)
