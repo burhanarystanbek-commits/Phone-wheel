@@ -59,7 +59,8 @@ public class BluetoothServer
         }
         catch (Exception ex)
         {
-            Log?.Invoke($"Ошибка запуска Bluetooth-сервера: {ex.Message}");
+            Log?.Invoke($"Ошибка запуска Bluetooth-сервера:");
+            Log?.Invoke(ex.ToString());
             listenSock?.Dispose();
             _listenSocket = null;
             return false;
