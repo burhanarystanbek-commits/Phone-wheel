@@ -12,7 +12,9 @@ import android.hardware.SensorManager
 import android.inputmethodservice.InputMethodService
 import android.os.Bundle
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
+import android.os.Process
 import android.text.InputType
 import android.view.*
 import android.widget.*
@@ -256,6 +258,24 @@ class MainActivity : Activity(), SensorEventListener {
     private var seq           = 0L
 
     private val handler = Handler(Looper.getMainLooper())
+
+    // Dedicated high-priority background thread for the 100 Hz send loop.
+    // Running sends off the main thread means UI touch events never delay
+    // outgoing packets, and the OS scheduler can give this thread elevated
+    // CPU priority independent of the UI thread.
+    private val sendThread = HandlerThread("pw-send", Process.THREAD_PRIORITY_URGENT_DISPLAY)
+    private val sendHandler by lazy {
+        sendThread.start()
+        Handler(sendThread.looper)
+    }
+
+    // Reusable JSON objects — rebuilt only when button count changes, not
+    // every frame, to keep per-frame allocation near zero and avoid GC spikes.
+    private val stateJson     = org.json.JSONObject()
+    private val buttonsJson   = org.json.JSONObject()
+    private val labelsJson    = org.json.JSONObject()
+    private var lastBtnCount  = -1
+    private var lastSendAt    = 0L
     private val connectionManager = ConnectionManager()
     private val btManager by lazy { BluetoothManager(this) }
     private val PERMISSION_REQUEST_CODE = 4201
@@ -305,6 +325,7 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onDestroy() {
         connectionManager.disconnect()
         btManager.teardown()
+        sendThread.quitSafely()
         super.onDestroy()
     }
 
@@ -831,33 +852,70 @@ class MainActivity : Activity(), SensorEventListener {
 
 
     private fun startSendLoop() {
-        handler.post(object : Runnable {
+        sendHandler.post(object : Runnable {
             override fun run() {
                 if (connected) {
                     try {
-                        val buttons = JSONObject()
-                        val labels  = JSONObject()
-                        // Emit id->pressed and id->label for every button
-                        // currently on screen, so the PC side can build its
-                        // mapping table from whatever buttons actually exist
-                        // — no fixed catalogue, no limit on count.
-                        for (cb in customButtons) {
-                            buttons.put(cb.buttonId, cb.pressed)
-                            labels.put(cb.buttonId, cb.labelText)
+                        val now = System.currentTimeMillis()
+
+                        // Rebuild button/label maps only when count changes — avoids
+                        // creating new JSONObject + N string keys every 10ms.
+                        val btnCount = customButtons.size
+                        if (btnCount != lastBtnCount) {
+                            buttonsJson.keys().forEach { buttonsJson.remove(it) }
+                            labelsJson.keys().forEach  { labelsJson.remove(it) }
+                            lastBtnCount = btnCount
                         }
-                        connectionManager.send(JSONObject()
-                            .put("type",     "state")
-                            .put("seq",      seq++)
-                            .put("ts",       System.currentTimeMillis())
-                            .put("steer",    steer.toDouble())
-                            .put("throttle", 0.5 + gasView.value.toDouble() / 200.0)
-                            .put("brake",    0.5 + brakeView.value.toDouble() / 200.0)
-                            .put("buttons",  buttons)
-                            .put("buttonLabels", labels)
-                            .toString())
+                        for (cb in customButtons) {
+                            buttonsJson.put(cb.buttonId, cb.pressed)
+                            labelsJson.put(cb.buttonId, cb.labelText)
+                        }
+
+                        // Reuse stateJson — update fields in place.
+                        stateJson.put("type",        "state")
+                        stateJson.put("seq",         seq++)
+                        stateJson.put("ts",          System.currentTimeMillis())
+                        stateJson.put("steer",       steer.toDouble())
+                        stateJson.put("throttle",    0.5 + gasView.value.toDouble() / 200.0)
+                        stateJson.put("brake",       0.5 + brakeView.value.toDouble() / 200.0)
+                        stateJson.put("buttons",     buttonsJson)
+                        stateJson.put("buttonLabels",labelsJson)
+
+                        connectionManager.send(stateJson.toString())
+                        lastSendAt = now
                     } catch (_: Exception) {}
+                } else {
+                    // Reset seq counter on disconnect so PC can detect gaps.
+                    if (lastSendAt > 0L) {
+                        seq = 0L
+                        lastSendAt = 0L
+                        lastBtnCount = -1
+                    }
                 }
-                handler.postDelayed(this, 16L)
+                sendHandler.postDelayed(this, SEND_INTERVAL_MS)
+            }
+        })
+
+        // Heartbeat runnable — if no state packet was sent in the last
+        // HEARTBEAT_INTERVAL_MS (e.g. phone is completely still), send a
+        // minimal keep-alive ping so the PC watchdog doesn't time out.
+        sendHandler.post(object : Runnable {
+            override fun run() {
+                if (connected) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastSendAt >= HEARTBEAT_INTERVAL_MS) {
+                        try {
+                            connectionManager.send(
+                                org.json.JSONObject()
+                                    .put("type", "heartbeat")
+                                    .put("ts",   now)
+                                    .toString()
+                            )
+                            lastSendAt = now
+                        } catch (_: Exception) {}
+                    }
+                }
+                sendHandler.postDelayed(this, HEARTBEAT_INTERVAL_MS)
             }
         })
     }
@@ -875,5 +933,10 @@ class MainActivity : Activity(), SensorEventListener {
                 handler.postDelayed(this, 40L)
             }
         })
+    }
+
+    companion object {
+        private const val SEND_INTERVAL_MS      = 10L   // 100 Hz target
+        private const val HEARTBEAT_INTERVAL_MS = 500L  // keepalive every 500ms
     }
 }
