@@ -21,13 +21,13 @@ internal static class Win32Bluetooth
     public const int AF_BTH = 32;
     public const int BTHPROTO_RFCOMM = 0x0003;
 
-    [StructLayout(LayoutKind.Sequential)]
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
     public struct SOCKADDR_BTH
     {
-        public short AddressFamily;     // AF_BTH
-        public ulong btAddr;            // 8 bytes — Bluetooth device address (0 = any, for listen)
-        public Guid serviceClassId;     // 16 bytes — RFCOMM service UUID
-        public uint port;               // 4 bytes — RFCOMM channel, or 0 = BT_PORT_ANY for listen
+        public ushort AddressFamily;    // AF_BTH
+        public ulong btAddr;            // Bluetooth address (0 = any local radio)
+        public Guid serviceClassId;     // Service UUID
+        public uint port;               // RFCOMM channel (0 = auto assign)
     }
 
     /// <summary>Tries to create a raw AF_BTH/BTHPROTO_RFCOMM socket. If this
@@ -97,8 +97,11 @@ internal sealed class BluetoothListenEndPoint : EndPoint
     public override SocketAddress Serialize()
     {
         var bytes = Win32Bluetooth.BuildListenSockAddr(_serviceUuid);
-        var sa = new SocketAddress(AddressFamily, bytes.Length);
-        for (var i = 0; i < bytes.Length; i++) sa[i] = bytes[i];
+        var sa = new SocketAddress((AddressFamily)Win32Bluetooth.AF_BTH,bytes.Length + 2);
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            sa[i + 2] = bytes[i];
+        }
         return sa;
     }
 
