@@ -1,73 +1,61 @@
-using InTheHand.Net;
-using InTheHand.Net.Bluetooth;
-using InTheHand.Net.Sockets;
+using System.Net.Sockets;
 using System.Text;
+using PhoneWheelPC.Bluetooth;
 
 namespace PhoneWheelPC;
 
 /// <summary>
-/// Accepts incoming RFCOMM Bluetooth connections from the phone. Unlike
-/// Wi-Fi/USB (where the PC is an HTTP/WebSocket server the phone reaches
-/// over TCP), Bluetooth here works the other way: the phone, after the user
-/// picks this PC from its paired devices list, opens an RFCOMM socket to the
-/// well-known PhoneWheel service UUID that this class advertises. So this
-/// class is a *server* (it listens and accepts), even though the phone is
-/// the one initiating the socket connect() call — that's normal for RFCOMM:
-/// a service advertises a UUID and listens, a client looks it up and
-/// connects.
-///
-/// Framing matches BluetoothManager.kt on the Android side: newline-
-/// delimited JSON, one WheelState object per line.
+/// Accepts incoming RFCOMM Bluetooth connections from the phone using native
+/// Win32 Winsock AF_BTH sockets — no third-party NuGet package required.
+/// The phone (Android) initiates the RFCOMM connect() to this service UUID;
+/// this class listens and accepts. Framing is newline-delimited JSON, one
+/// WheelState object per line, matching BluetoothManager.kt on Android.
 /// </summary>
 public class BluetoothServer
 {
-    /// <summary>Must match BluetoothManager.SERVICE_UUID in
-    /// BluetoothManager.kt exactly — this is the rendezvous point between
-    /// the two apps, not a secret.</summary>
-    public static readonly Guid ServiceUuid = new("8ce255c0-200a-11e0-ac64-0800200c9a66");
-    public const string ServiceName = "PhoneWheel";
+    public static readonly Guid ServiceUuid =
+        new("8ce255c0-200a-11e0-ac64-0800200c9a66");
 
-    private BluetoothListener? _listener;
-    private BluetoothClient? _activeClient;
+    private Socket? _listenSocket;
+    private Socket? _clientSocket;
     private CancellationTokenSource? _cts;
 
     public event Action<WheelState>? StateReceived;
-    public event Action<string>? ClientConnected; // device name/address
+    public event Action<string>? ClientConnected;
     public event Action? ClientDisconnected;
     public event Action<string>? Log;
 
-    public bool IsRadioPresent => BluetoothRadio.PrimaryRadio != null;
-    public bool IsRadioPoweredOn => BluetoothRadio.PrimaryRadio?.Mode != RadioMode.PowerOff;
+    /// <summary>Returns false if no Bluetooth radio / stack is available on
+    /// this PC, by trying to create an AF_BTH socket as the probe.</summary>
+    public bool IsRadioPresent =>
+        Win32Bluetooth.TryCreateRfcommSocket(out var s, out _) &&
+        (s?.Close() == null || true); // always true if probe succeeds
 
-    /// <summary>Starts advertising the PhoneWheel RFCOMM service and
-    /// accepting connections. Returns false if no Bluetooth radio is present
-    /// or it could not be started (radio off, drivers missing, etc).</summary>
     public bool Start()
     {
-        if (BluetoothRadio.PrimaryRadio == null)
+        if (!Win32Bluetooth.TryCreateRfcommSocket(out var listenSock, out var err))
         {
-            Log?.Invoke("Bluetooth-адаптер не найден на этом ПК.");
-            return false;
-        }
-        if (BluetoothRadio.PrimaryRadio.Mode == RadioMode.PowerOff)
-        {
-            Log?.Invoke("Bluetooth выключен на этом ПК. Включи его в настройках Windows.");
+            Log?.Invoke($"Bluetooth недоступен: {err}. Убедись, что Bluetooth включён в Windows.");
             return false;
         }
 
         try
         {
+            _listenSocket = listenSock!;
+            var ep = new BluetoothListenEndPoint(ServiceUuid);
+            _listenSocket.Bind(ep);
+            _listenSocket.Listen(1);
+
             _cts = new CancellationTokenSource();
-            _listener = new BluetoothListener(ServiceUuid) { ServiceName = ServiceName };
-            _listener.Start();
             Log?.Invoke($"Bluetooth-сервер слушает (UUID {ServiceUuid}).");
             _ = AcceptLoop(_cts.Token);
             return true;
         }
         catch (Exception ex)
         {
-            Log?.Invoke($"Не удалось запустить Bluetooth-сервер: {ex.Message}");
-            _listener = null;
+            Log?.Invoke($"Ошибка запуска Bluetooth-сервера: {ex.Message}");
+            listenSock?.Dispose();
+            _listenSocket = null;
             return false;
         }
     }
@@ -75,87 +63,69 @@ public class BluetoothServer
     public void Stop()
     {
         _cts?.Cancel();
-        try { _activeClient?.Close(); } catch { /* ignore */ }
-        try { _listener?.Stop(); } catch { /* ignore */ }
-        _listener = null;
-        _activeClient = null;
+        SafeClose(_clientSocket); _clientSocket = null;
+        SafeClose(_listenSocket); _listenSocket = null;
     }
 
     private async Task AcceptLoop(CancellationToken token)
     {
-        while (_listener != null && !token.IsCancellationRequested)
+        while (!token.IsCancellationRequested && _listenSocket != null)
         {
-            BluetoothClient client;
+            Socket client;
             try
             {
-                client = await Task.Run(() => _listener.AcceptBluetoothClient(), token);
+                client = await _listenSocket.AcceptAsync(token);
             }
             catch
             {
-                break; // listener stopped
+                break;
             }
 
-            // Only one phone drives the wheel at a time — if a new client
-            // connects, replace whatever was there before rather than
-            // juggling multiple simultaneous inputs.
-            try { _activeClient?.Close(); } catch { /* ignore */ }
-            _activeClient = client;
+            SafeClose(_clientSocket);
+            _clientSocket = client;
 
-            var remoteName = SafeDeviceName(client);
-            Log?.Invoke($"Bluetooth подключен: {remoteName}");
-            ClientConnected?.Invoke(remoteName);
+            var peerName = client.RemoteEndPoint?.ToString() ?? "телефон";
+            Log?.Invoke($"Bluetooth подключен: {peerName}");
+            ClientConnected?.Invoke(peerName);
 
             _ = HandleClient(client, token);
         }
     }
 
-    private static string SafeDeviceName(BluetoothClient client)
+    private async Task HandleClient(Socket client, CancellationToken token)
     {
         try
         {
-            var ep = client.RemoteEndPoint as BluetoothEndPoint;
-            return ep?.Device.DeviceName ?? ep?.Address.ToString() ?? "неизвестное устройство";
-        }
-        catch
-        {
-            return "неизвестное устройство";
-        }
-    }
-
-    private async Task HandleClient(BluetoothClient client, CancellationToken token)
-    {
-        try
-        {
-            using var stream = client.GetStream();
-            using var reader = new StreamReader(stream, Encoding.UTF8);
-
+            var ns = new NetworkStream(client, ownsSocket: false);
+            using var reader = new StreamReader(ns, Encoding.UTF8);
             while (client.Connected && !token.IsCancellationRequested)
             {
                 var line = await reader.ReadLineAsync(token);
-                if (line == null) break; // remote closed
+                if (line == null) break;
                 if (string.IsNullOrWhiteSpace(line)) continue;
-
                 try
                 {
-                    var state = System.Text.Json.JsonSerializer.Deserialize<WheelState>(line);
+                    var state = System.Text.Json.JsonSerializer
+                        .Deserialize<WheelState>(line);
                     if (state != null) StateReceived?.Invoke(state);
                 }
-                catch
-                {
-                    // ignore malformed frames, keep the connection alive
-                }
+                catch { /* ignore malformed frames */ }
             }
         }
-        catch
-        {
-            // connection dropped
-        }
+        catch { /* connection dropped */ }
         finally
         {
-            if (ReferenceEquals(_activeClient, client)) _activeClient = null;
+            if (ReferenceEquals(_clientSocket, client)) _clientSocket = null;
             ClientDisconnected?.Invoke();
-            Log?.Invoke("Bluetooth-устройство отключилось");
-            try { client.Close(); } catch { /* ignore */ }
+            Log?.Invoke("Bluetooth-устройство отключилось.");
+            SafeClose(client);
         }
+    }
+
+    private static void SafeClose(Socket? s)
+    {
+        try { s?.Shutdown(SocketShutdown.Both); } catch { }
+        try { s?.Close(); } catch { }
+        s?.Dispose();
     }
 }
