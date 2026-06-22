@@ -167,13 +167,14 @@ public class ConnectionManager : IDisposable
                     // Guard: another thread may have already switched.
                     if (_active == null || _active.Kind != kind) return;
                     DetachActive();
-                    ITransport next = kind switch
+                    ITransport? next = kind switch
                     {
                         TransportKind.WiFi      => new WebSocketTransport(TransportKind.WiFi),
                         TransportKind.Usb       => new WebSocketTransport(TransportKind.Usb),
-                        TransportKind.Bluetooth => new BluetoothTransport(),
-                        _ => return,
+                        TransportKind.Bluetooth => (ITransport)new BluetoothTransport(),
+                        _ => null,
                     };
+                    if (next == null) return;
                     AttachActive(next);
                     next.Start();
                 }
