@@ -8,15 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>PhoneWheelPC</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
-
-  <ItemGroup>
-    <!-- Classic Bluetooth (RFCOMM) support — Windows.Devices.Bluetooth is
-         UWP-oriented and awkward from a plain WinForms .NET 8 app, so we use
-         32feet.NET's InTheHand.Net.Bluetooth, which wraps the Win32
-         Bluetooth APIs (Winsock RFCOMM sockets + BluetoothAuthenticateDevice
-         for pairing) in a plain .NET API surface that works fine here. -->
-    <PackageReference Include="InTheHand.Net.Bluetooth" Version="4.0.36" />
-  </ItemGroup>
 
 </Project>
