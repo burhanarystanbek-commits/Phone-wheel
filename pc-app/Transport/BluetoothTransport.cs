@@ -2,16 +2,10 @@ namespace PhoneWheelPC.Transport;
 
 /// <summary>
 /// Adapts <see cref="BluetoothServer"/> (RFCOMM listener) to
-/// <see cref="ITransport"/>, mirroring how <see cref="WebSocketTransport"/>
-/// adapts <see cref="WsServer"/>. This replaces the placeholder
-/// BluetoothTransport that previously always reported "not yet
-/// implemented" — <see cref="ConnectionManager"/> doesn't need any changes
-/// to use this, since it only depends on <see cref="ITransport"/>.
-///
-/// Like WebSocketTransport, the PC is the listening side and the phone
-/// initiates the connection (after the user picks this PC from their paired
-/// devices list on Android) — so Start() here means "begin advertising the
-/// RFCOMM service and accepting", not "dial out to a phone".
+/// <see cref="ITransport"/>. This replaces the placeholder BluetoothTransport
+/// that previously always reported "not yet implemented".
+/// The PC is the listening side; the phone initiates the RFCOMM connect.
+/// Start() advertises the service and waits for the phone to connect.
 /// </summary>
 public class BluetoothTransport : ITransport
 {
@@ -48,7 +42,6 @@ public class BluetoothTransport : ITransport
         _server.ClientDisconnected += () =>
         {
             _peer = null;
-            // Still listening for a reconnect, not fully torn down.
             State = ConnectionState.Reconnecting;
         };
         _server.StateReceived += s => StateReceived?.Invoke(s);
@@ -59,13 +52,7 @@ public class BluetoothTransport : ITransport
     {
         if (!_server.IsRadioPresent)
         {
-            Log?.Invoke("На этом ПК нет Bluetooth-адаптера.");
-            State = ConnectionState.Error;
-            return false;
-        }
-        if (!_server.IsRadioPoweredOn)
-        {
-            Log?.Invoke("Bluetooth выключен в Windows — включи его и попробуй снова.");
+            Log?.Invoke("Bluetooth-адаптер не найден на этом ПК или Bluetooth выключен в Windows.");
             State = ConnectionState.Error;
             return false;
         }
@@ -82,13 +69,7 @@ public class BluetoothTransport : ITransport
         State = ConnectionState.Disconnected;
     }
 
-    public void Send(string json)
-    {
-        // Outbound PC -> phone commands aren't part of the current protocol
-        // (state flows phone -> PC only, same as WebSocketTransport). Kept
-        // as a no-op for ITransport symmetry and to leave room for a future
-        // heartbeat/ack frame without changing the interface again.
-    }
+    public void Send(string json) { /* state flows phone -> PC only */ }
 
     public void Dispose() => Stop();
 }
