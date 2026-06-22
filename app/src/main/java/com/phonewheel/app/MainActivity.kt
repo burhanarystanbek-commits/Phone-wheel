@@ -848,6 +848,7 @@ class MainActivity : Activity(), SensorEventListener {
                         connectionManager.send(JSONObject()
                             .put("type",     "state")
                             .put("seq",      seq++)
+                            .put("ts",       System.currentTimeMillis())
                             .put("steer",    steer.toDouble())
                             .put("throttle", 0.5 + gasView.value.toDouble() / 200.0)
                             .put("brake",    0.5 + brakeView.value.toDouble() / 200.0)
