@@ -117,11 +117,7 @@ public class ConnectionManager : IDisposable
         _lastPacketAt = DateTime.UtcNow;
         Interlocked.Increment(ref _packetsThisSecond);
 
-        // Latency estimate: if the phone included a send-timestamp, compute
-        // how long ago that was. Requires phone/PC clocks to be roughly in
-        // sync (within a few hundred ms), which is almost always true on
-        // modern devices that use NTP. We clamp to 0..2000ms to filter wild
-        // clock-skew spikes that aren't real latency.
+        // Latency estimate using phone-side timestamp.
         if (s.Ts > 0)
         {
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -133,19 +129,55 @@ public class ConnectionManager : IDisposable
             }
         }
 
+        // Heartbeat frames keep the watchdog alive but carry no controller
+        // state — don't forward them to the vJoy bridge.
+        if (s.Type == "heartbeat") return;
+
         StateReceived?.Invoke(s);
     }
 
+    /// <summary>Runs once a second: rolls the packet-rate counter, clears
+    /// stale latency, and restarts the transport if the watchdog fires
+    /// (connected but no packets in <see cref="PacketTimeout"/>).</summary>
     private void Tick()
     {
         _packetRate = Interlocked.Exchange(ref _packetsThisSecond, 0);
         PacketRateChanged?.Invoke(_packetRate);
 
-        if (_active != null
-            && _active.State == ConnectionState.Connected
+        // Clear latency display when nothing is arriving.
+        if (_packetRate == 0 && _latencyMs >= 0)
+        {
+            _latencyMs = -1;
+            LatencyChanged?.Invoke(-1);
+        }
+
+        if (_active == null) return;
+
+        if (_active.State == ConnectionState.Connected
             && TimeSinceLastPacket > PacketTimeout)
         {
-            Log?.Invoke("Нет пакетов от телефона — связь могла прерваться.");
+            Log?.Invoke($"Watchdog: нет пакетов {PacketTimeout.TotalSeconds:0} сек — перезапуск транспорта...");
+            var kind = _active.Kind;
+            // Queue the restart on the thread pool — Tick runs on the timer
+            // callback thread and must not block waiting for the lock.
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                lock (_lock)
+                {
+                    // Guard: another thread may have already switched.
+                    if (_active == null || _active.Kind != kind) return;
+                    DetachActive();
+                    ITransport next = kind switch
+                    {
+                        TransportKind.WiFi      => new WebSocketTransport(TransportKind.WiFi),
+                        TransportKind.Usb       => new WebSocketTransport(TransportKind.Usb),
+                        TransportKind.Bluetooth => new BluetoothTransport(),
+                        _ => return,
+                    };
+                    AttachActive(next);
+                    next.Start();
+                }
+            });
         }
     }
 
