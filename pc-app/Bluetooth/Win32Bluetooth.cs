@@ -97,10 +97,14 @@ internal sealed class BluetoothListenEndPoint : EndPoint
     public override SocketAddress Serialize()
     {
         var bytes = Win32Bluetooth.BuildListenSockAddr(_serviceUuid);
-        var sa = new SocketAddress((AddressFamily)Win32Bluetooth.AF_BTH,bytes.Length + 2);
-        for (int i = 0; i < bytes.Length; i++)
+        // SocketAddress(af, size) writes AddressFamily into bytes[0..1] itself.
+        // Our SOCKADDR_BTH struct also starts with AddressFamily at bytes[0..1],
+        // so we start copying from bytes[2] onwards to avoid writing AF twice
+        // and shifting the rest of the structure.
+        var sa = new SocketAddress((AddressFamily)Win32Bluetooth.AF_BTH, bytes.Length);
+        for (int i = 2; i < bytes.Length; i++)
         {
-            sa[i + 2] = bytes[i];
+            sa[i] = bytes[i];
         }
         return sa;
     }
