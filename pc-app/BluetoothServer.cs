@@ -4,12 +4,6 @@ using PhoneWheelPC.Bluetooth;
 
 namespace PhoneWheelPC;
 
-/// <summary>
-/// Accepts incoming RFCOMM Bluetooth connections from the phone.
-/// Uses Win32Bluetooth.BindRfcommServer() (direct ws2_32!bind P/Invoke)
-/// instead of Socket.Bind(EndPoint) — the .NET Socket.Bind pipeline
-/// mangles SOCKADDR_BTH bytes and produces WSAEADDRNOTAVAIL (10049).
-/// </summary>
 public class BluetoothServer
 {
     public static readonly Guid ServiceUuid =
@@ -45,9 +39,6 @@ public class BluetoothServer
         try
         {
             _listenSocket = listenSock!;
-
-            // Direct P/Invoke bind — bypasses Socket.Bind(EndPoint) which
-            // corrupts SOCKADDR_BTH and causes WSAEADDRNOTAVAIL (10049).
             Win32Bluetooth.BindRfcommServer(_listenSocket, ServiceUuid);
             _listenSocket.Listen(1);
 
@@ -77,44 +68,97 @@ public class BluetoothServer
         while (!token.IsCancellationRequested && _listenSocket != null)
         {
             Socket client;
-            try   { client = await _listenSocket.AcceptAsync(token); }
-            catch { break; }
+            try
+            {
+                // AcceptAsync on AF_BTH works — but RemoteEndPoint throws
+                // NotSupportedException on non-IP sockets in .NET, so we
+                // don't call it. Use a fixed label instead.
+                client = await _listenSocket.AcceptAsync(token);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                Log?.Invoke($"AcceptLoop ошибка: {ex.Message}");
+                break;
+            }
 
             SafeClose(_clientSocket);
             _clientSocket = client;
 
-            var peerName = client.RemoteEndPoint?.ToString() ?? "телефон";
-            Log?.Invoke($"Bluetooth подключен: {peerName}");
-            ClientConnected?.Invoke(peerName);
+            Log?.Invoke("Bluetooth: устройство подключилось.");
+            ClientConnected?.Invoke("Bluetooth-устройство");
+
             _ = HandleClient(client, token);
         }
     }
 
     private async Task HandleClient(Socket client, CancellationToken token)
     {
+        Log?.Invoke("Bluetooth: начало чтения данных...");
         try
         {
-            var ns = new NetworkStream(client, ownsSocket: false);
-            using var reader = new StreamReader(ns, Encoding.UTF8);
-            while (client.Connected && !token.IsCancellationRequested)
+            // AF_BTH сокеты в .NET не поддерживают NetworkStream напрямую
+            // (конструктор проверяет AddressFamily и может бросить).
+            // Читаем вручную через Socket.ReceiveAsync в буфер, собирая строки.
+            var buffer    = new byte[4096];
+            var remainder = new StringBuilder();
+
+            while (!token.IsCancellationRequested)
             {
-                var line = await reader.ReadLineAsync(token);
-                if (line == null) break;
-                if (string.IsNullOrWhiteSpace(line)) continue;
+                int received;
                 try
                 {
-                    var state = System.Text.Json.JsonSerializer.Deserialize<WheelState>(line);
-                    if (state != null) StateReceived?.Invoke(state);
+                    received = await client.ReceiveAsync(
+                        new ArraySegment<byte>(buffer), SocketFlags.None, token);
                 }
-                catch { /* ignore malformed frames */ }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    Log?.Invoke($"Bluetooth: ошибка чтения — {ex.Message}");
+                    break;
+                }
+
+                if (received == 0)
+                {
+                    Log?.Invoke("Bluetooth: соединение закрыто телефоном (EOF).");
+                    break;
+                }
+
+                // Append received bytes as UTF-8 text and split on newlines.
+                remainder.Append(Encoding.UTF8.GetString(buffer, 0, received));
+
+                var text = remainder.ToString();
+                var start = 0;
+                for (var i = 0; i < text.Length; i++)
+                {
+                    if (text[i] != '\n') continue;
+
+                    var line = text.Substring(start, i - start).Trim();
+                    start = i + 1;
+
+                    if (string.IsNullOrEmpty(line)) continue;
+                    try
+                    {
+                        var state = System.Text.Json.JsonSerializer.Deserialize<WheelState>(line);
+                        if (state != null) StateReceived?.Invoke(state);
+                    }
+                    catch { /* ignore malformed frame */ }
+                }
+
+                remainder.Clear();
+                if (start < text.Length)
+                    remainder.Append(text.Substring(start));
             }
         }
-        catch { /* connection dropped */ }
+        catch (Exception ex)
+        {
+            Log?.Invoke($"Bluetooth HandleClient: {ex.Message}");
+        }
         finally
         {
             if (ReferenceEquals(_clientSocket, client)) _clientSocket = null;
             ClientDisconnected?.Invoke();
-            Log?.Invoke("Bluetooth-устройство отключилось.");
+            Log?.Invoke("Bluetooth: устройство отключилось.");
             SafeClose(client);
         }
     }
