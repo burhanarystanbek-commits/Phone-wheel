@@ -5,11 +5,10 @@ using PhoneWheelPC.Bluetooth;
 namespace PhoneWheelPC;
 
 /// <summary>
-/// Accepts incoming RFCOMM Bluetooth connections from the phone using native
-/// Win32 Winsock AF_BTH sockets — no third-party NuGet package required.
-/// The phone (Android) initiates the RFCOMM connect() to this service UUID;
-/// this class listens and accepts. Framing is newline-delimited JSON, one
-/// WheelState object per line, matching BluetoothManager.kt on Android.
+/// Accepts incoming RFCOMM Bluetooth connections from the phone.
+/// Uses Win32Bluetooth.BindRfcommServer() (direct ws2_32!bind P/Invoke)
+/// instead of Socket.Bind(EndPoint) — the .NET Socket.Bind pipeline
+/// mangles SOCKADDR_BTH bytes and produces WSAEADDRNOTAVAIL (10049).
 /// </summary>
 public class BluetoothServer
 {
@@ -21,12 +20,10 @@ public class BluetoothServer
     private CancellationTokenSource? _cts;
 
     public event Action<WheelState>? StateReceived;
-    public event Action<string>? ClientConnected;
-    public event Action? ClientDisconnected;
-    public event Action<string>? Log;
+    public event Action<string>?     ClientConnected;
+    public event Action?             ClientDisconnected;
+    public event Action<string>?     Log;
 
-    /// <summary>Returns false if no Bluetooth radio / stack is available on
-    /// this PC, by trying to create an AF_BTH socket as the probe.</summary>
     public bool IsRadioPresent
     {
         get
@@ -41,15 +38,17 @@ public class BluetoothServer
     {
         if (!Win32Bluetooth.TryCreateRfcommSocket(out var listenSock, out var err))
         {
-            Log?.Invoke($"Bluetooth недоступен: {err}. Убедись, что Bluetooth включён в Windows.");
+            Log?.Invoke($"Bluetooth недоступен: {err}. Убедись что Bluetooth включён в Windows.");
             return false;
         }
 
         try
         {
             _listenSocket = listenSock!;
-            var ep = new BluetoothListenEndPoint(ServiceUuid);
-            _listenSocket.Bind(ep);
+
+            // Direct P/Invoke bind — bypasses Socket.Bind(EndPoint) which
+            // corrupts SOCKADDR_BTH and causes WSAEADDRNOTAVAIL (10049).
+            Win32Bluetooth.BindRfcommServer(_listenSocket, ServiceUuid);
             _listenSocket.Listen(1);
 
             _cts = new CancellationTokenSource();
@@ -59,8 +58,7 @@ public class BluetoothServer
         }
         catch (Exception ex)
         {
-            Log?.Invoke($"Ошибка запуска Bluetooth-сервера:");
-            Log?.Invoke(ex.ToString());
+            Log?.Invoke($"Ошибка запуска Bluetooth-сервера: {ex.Message}");
             listenSock?.Dispose();
             _listenSocket = null;
             return false;
@@ -79,14 +77,8 @@ public class BluetoothServer
         while (!token.IsCancellationRequested && _listenSocket != null)
         {
             Socket client;
-            try
-            {
-                client = await _listenSocket.AcceptAsync(token);
-            }
-            catch
-            {
-                break;
-            }
+            try   { client = await _listenSocket.AcceptAsync(token); }
+            catch { break; }
 
             SafeClose(_clientSocket);
             _clientSocket = client;
@@ -94,7 +86,6 @@ public class BluetoothServer
             var peerName = client.RemoteEndPoint?.ToString() ?? "телефон";
             Log?.Invoke($"Bluetooth подключен: {peerName}");
             ClientConnected?.Invoke(peerName);
-
             _ = HandleClient(client, token);
         }
     }
@@ -112,8 +103,7 @@ public class BluetoothServer
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 try
                 {
-                    var state = System.Text.Json.JsonSerializer
-                        .Deserialize<WheelState>(line);
+                    var state = System.Text.Json.JsonSerializer.Deserialize<WheelState>(line);
                     if (state != null) StateReceived?.Invoke(state);
                 }
                 catch { /* ignore malformed frames */ }
@@ -132,7 +122,7 @@ public class BluetoothServer
     private static void SafeClose(Socket? s)
     {
         try { s?.Shutdown(SocketShutdown.Both); } catch { }
-        try { s?.Close(); } catch { }
+        try { s?.Close(); }                      catch { }
         s?.Dispose();
     }
 }
