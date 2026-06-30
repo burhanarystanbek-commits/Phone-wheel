@@ -274,7 +274,10 @@ class MainActivity : Activity(), SensorEventListener {
     private val stateJson     = org.json.JSONObject()
     private val buttonsJson   = org.json.JSONObject()
     private val labelsJson    = org.json.JSONObject()
+    private val axesJson      = org.json.JSONObject()
+    private val axisLabelsJson = org.json.JSONObject()
     private var lastBtnCount  = -1
+    private var lastKnobCount = -1
     private var lastSendAt    = 0L
     private val connectionManager = ConnectionManager()
     private val btManager by lazy { BluetoothManager(this) }
@@ -299,12 +302,18 @@ class MainActivity : Activity(), SensorEventListener {
     private var nextButtonId = 1
     private var editMode = false
 
+    // --- customizable rotary knobs (ABS / TC / brake balance / ...) ---
+    private lateinit var knobLayoutStore: KnobLayoutStore
+    private val customKnobs = mutableListOf<RotaryKnobView>()
+    private var nextAxisId = 1
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         layoutStore = LayoutStore(this)
+        knobLayoutStore = KnobLayoutStore(this)
         setupSensors()
         buildUi()
         setupConnectionCallbacks()
@@ -522,8 +531,14 @@ class MainActivity : Activity(), SensorEventListener {
                 nextButtonId = savedNextId
                 rebuildButtons(layouts)
             }
+            val loadedKnobs = knobLayoutStore.load()
+            if (loadedKnobs != null) {
+                val (knobLayouts, savedNextAxisId) = loadedKnobs
+                nextAxisId = savedNextAxisId
+                rebuildKnobs(knobLayouts)
+            }
             // No saved layout yet -> start with an empty overlay; user adds
-            // buttons with the "+" toolbar button.
+            // buttons/knobs with the toolbar buttons.
         }
     }
 
@@ -550,14 +565,21 @@ class MainActivity : Activity(), SensorEventListener {
             visibility = View.GONE
         }
         val addBtn = Button(this).apply {
-            text = "+ Добавить кнопку"
+            text = "+ Кнопка"
             setTextColor(Color.WHITE)
             background = roundRect(Color.parseColor("#5b4fe8"), dp(10).toFloat())
             setOnClickListener { addNewButton() }
         }
         editToolbar.addView(addBtn, lp(0, dp(34), 1f, endMargin = dp(4)))
-        val hintLbl = tv("тяни • тяни уголок чтобы изменить размер • тап чтобы переименовать • держи чтобы удалить", 9f, Color.parseColor("#6b7394"))
-        editToolbar.addView(hintLbl, lp(0, dp(34), 1.4f, endMargin = dp(4)))
+        val addKnobBtn = Button(this).apply {
+            text = "+ Колёсико"
+            setTextColor(Color.WHITE)
+            background = roundRect(Color.parseColor("#228866"), dp(10).toFloat())
+            setOnClickListener { addNewKnob() }
+        }
+        editToolbar.addView(addKnobBtn, lp(0, dp(34), 1f, endMargin = dp(4)))
+        val hintLbl = tv("тяни • уголок = размер • тап = переим. • держи = удалить", 8f, Color.parseColor("#6b7394"))
+        editToolbar.addView(hintLbl, lp(0, dp(34), 1.2f, endMargin = dp(4)))
         val doneBtn = Button(this).apply {
             text = "Готово"
             setTextColor(Color.parseColor("#22dc82"))
@@ -575,6 +597,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun setEditMode(on: Boolean) {
         editMode = on
         customButtons.forEach { it.editMode = on }
+        customKnobs.forEach { it.editMode = on }
         editToolbar.visibility = if (on) View.VISIBLE else View.GONE
     }
 
@@ -661,6 +684,99 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun persistCurrentLayout() {
         layoutStore.save(customButtons.map { it.toLayout() }, nextButtonId)
+    }
+
+    // ─── Rotary knobs (ABS / TC / brake balance / ...) ─────────────────────
+    // Mirrors the button management methods above exactly — same id scheme,
+    // same edit-mode interactions, same persistence pattern.
+
+    private fun rebuildKnobs(layouts: List<KnobLayout>) {
+        customKnobs.forEach { buttonOverlay.removeView(it) }
+        customKnobs.clear()
+        val pw = buttonOverlay.width.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels.toFloat()
+        val ph = buttonOverlay.height.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.heightPixels.toFloat()
+        for (kl in layouts) {
+            val view = RotaryKnobView(this, kl.id, kl.label, kl.value,
+                onValueChanged = { persistCurrentKnobLayout() },
+                onMoved = { persistCurrentKnobLayout() },
+                onLongPressRemove = { v -> confirmRemoveKnob(v) },
+                onTapRename = { v -> renameKnobDialog(v) })
+            view.editMode = editMode
+            val size = (kl.sizeFrac * pw).toInt()
+            val params = FrameLayout.LayoutParams(size, size).apply {
+                leftMargin = (kl.xFrac * pw).toInt()
+                topMargin  = (kl.yFrac * ph).toInt()
+            }
+            buttonOverlay.addView(view, params)
+            customKnobs.add(view)
+        }
+    }
+
+    private fun confirmRemoveKnob(view: RotaryKnobView) {
+        AlertDialog.Builder(this)
+            .setTitle("Удалить колёсико «${view.labelText}»?")
+            .setPositiveButton("Удалить") { _, _ ->
+                buttonOverlay.removeView(view)
+                customKnobs.remove(view)
+                persistCurrentKnobLayout()
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun renameKnobDialog(view: RotaryKnobView) {
+        val input = EditText(this).apply {
+            setText(view.labelText)
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.parseColor("#6b7394"))
+            hint = "Название колёсика (например ABS)"
+            setSingleLine(true)
+            setSelection(text.length)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Название колёсика (${view.axisId})")
+            .setView(input)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val newLabel = input.text.toString().trim()
+                if (newLabel.isNotEmpty()) {
+                    view.labelText = newLabel
+                    view.invalidate()
+                    persistCurrentKnobLayout()
+                }
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    /** Adds a new free-form rotary knob in the center of the screen with a
+     *  fresh, never-reused id ("axis_N"). Same auto-naming/no-limit pattern
+     *  as addNewButton(). */
+    private fun addNewKnob() {
+        val pw = buttonOverlay.width.toFloat()
+        val ph = buttonOverlay.height.toFloat()
+        val id = "axis_${nextAxisId}"
+        val label = "AXIS $nextAxisId"
+        nextAxisId++
+
+        val stagger = (customKnobs.size % 5) * dp(16)
+        val view = RotaryKnobView(this, id, label, 0.5f,
+            onValueChanged = { persistCurrentKnobLayout() },
+            onMoved = { persistCurrentKnobLayout() },
+            onLongPressRemove = { v -> confirmRemoveKnob(v) },
+            onTapRename = { v -> renameKnobDialog(v) })
+        view.editMode = editMode
+        val size = dp(96)
+        val params = FrameLayout.LayoutParams(size, size).apply {
+            leftMargin = ((pw - size) / 2f).toInt() + stagger
+            topMargin  = ((ph - size) / 2f).toInt() + stagger
+        }
+        buttonOverlay.addView(view, params)
+        customKnobs.add(view)
+        persistCurrentKnobLayout()
+    }
+
+    private fun persistCurrentKnobLayout() {
+        knobLayoutStore.save(customKnobs.map { it.toLayout() }, nextAxisId)
     }
 
     private fun setConnMode(kind: TransportKind, usbBtn: Button, wifiBtn: Button, btBtn: Button) {
@@ -871,6 +987,18 @@ class MainActivity : Activity(), SensorEventListener {
                             labelsJson.put(cb.buttonId, cb.labelText)
                         }
 
+                        // Same reuse pattern for rotary-knob axes.
+                        val knobCount = customKnobs.size
+                        if (knobCount != lastKnobCount) {
+                            axesJson.keys().forEach { axesJson.remove(it) }
+                            axisLabelsJson.keys().forEach { axisLabelsJson.remove(it) }
+                            lastKnobCount = knobCount
+                        }
+                        for (kn in customKnobs) {
+                            axesJson.put(kn.axisId, kn.value.toDouble())
+                            axisLabelsJson.put(kn.axisId, kn.labelText)
+                        }
+
                         // Reuse stateJson — update fields in place.
                         stateJson.put("type",        "state")
                         stateJson.put("seq",         seq++)
@@ -880,6 +1008,8 @@ class MainActivity : Activity(), SensorEventListener {
                         stateJson.put("brake",       0.5 + brakeView.value.toDouble() / 200.0)
                         stateJson.put("buttons",     buttonsJson)
                         stateJson.put("buttonLabels",labelsJson)
+                        stateJson.put("axes",        axesJson)
+                        stateJson.put("axisLabels",  axisLabelsJson)
 
                         connectionManager.send(stateJson.toString())
                         lastSendAt = now
@@ -890,6 +1020,7 @@ class MainActivity : Activity(), SensorEventListener {
                         seq = 0L
                         lastSendAt = 0L
                         lastBtnCount = -1
+                        lastKnobCount = -1
                     }
                 }
                 sendHandler.postDelayed(this, SEND_INTERVAL_MS)
