@@ -34,6 +34,16 @@ public class WheelState
     [JsonPropertyName("buttonLabels")]
     public Dictionary<string, string> ButtonLabels { get; set; } = new();
 
+    /// <summary>axisId -> value in 0..1, sent for each rotary knob (ABS,
+    /// traction control, brake balance, etc) currently on the phone screen.</summary>
+    [JsonPropertyName("axes")]
+    public Dictionary<string, double> Axes { get; set; } = new();
+
+    /// <summary>axisId -> human label the user typed on the phone, same
+    /// pattern as ButtonLabels.</summary>
+    [JsonPropertyName("axisLabels")]
+    public Dictionary<string, string> AxisLabels { get; set; } = new();
+
     [JsonPropertyName("name")]
     public string? Name { get; set; }
 
