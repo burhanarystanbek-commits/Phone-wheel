@@ -19,6 +19,12 @@ public class MainForm : Form
     private readonly Dictionary<string, NumericUpDown> _buttonInputs = new();
     private readonly Dictionary<string, TextBox> _nameInputs = new();
     private readonly Dictionary<string, Label> _pressedDots = new();
+
+    private FlowLayoutPanel _axisPanel = new();
+    private readonly Dictionary<string, ComboBox> _axisInputs = new();
+    private readonly Dictionary<string, TextBox> _axisNameInputs = new();
+    private readonly Dictionary<string, ProgressBar> _axisBars = new();
+    private Label _axisEmptyHint = new();
     private Button _fixAclBtn = new();
     private Label _emptyHint = new();
     private Button _vjoySetupBtn = new();
@@ -41,7 +47,7 @@ public class MainForm : Form
     {
         Text = "PhoneWheel — PC App";
         Width = 820;
-        Height = 780;
+        Height = 1040;
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9f);
 
@@ -212,6 +218,48 @@ public class MainForm : Form
             AppendLog("Список кнопок очищен. Появятся снова при следующем нажатии на телефоне.");
         };
         Controls.Add(clearBtn);
+        y += 44;
+
+        // ─── Колёсики (ABS, TC, brake balance, ...) ─────────────────────
+        Controls.Add(new Label
+        {
+            Left = pad, Top = y, Width = 700,
+            Text = "Колёсики телефона → ось vJoy (привяжи в настройках управления игры как обычную ось):",
+            Font = new Font(Font, FontStyle.Bold)
+        });
+        y += 22;
+
+        _axisEmptyHint = new Label
+        {
+            Left = pad, Top = y, Width = 780, Height = 40,
+            ForeColor = Color.Gray,
+            Text = "Колёсики появятся здесь автоматически, как только добавишь их на телефоне\n(значок ⚙ → + Добавить колёсико)."
+        };
+        Controls.Add(_axisEmptyHint);
+
+        _axisPanel = new FlowLayoutPanel
+        {
+            Left = pad, Top = y, Width = 790, Height = 150,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoScroll = true,
+            BorderStyle = BorderStyle.FixedSingle,
+        };
+        Controls.Add(_axisPanel);
+        y += 160;
+
+        var saveAxesBtn = new Button { Left = pad, Top = y, Width = 160, Height = 30, Text = "Сохранить оси" };
+        saveAxesBtn.Click += (_, _) => SaveAxisMapping();
+        Controls.Add(saveAxesBtn);
+
+        var clearAxesBtn = new Button { Left = pad + 170, Top = y, Width = 160, Height = 30, Text = "Очистить оси" };
+        clearAxesBtn.Click += (_, _) =>
+        {
+            _mapping.AxisEntries.Clear();
+            RefreshAxisPanel();
+            AppendLog("Список колёсиков очищен.");
+        };
+        Controls.Add(clearAxesBtn);
         y += 40;
 
         Controls.Add(new Label { Left = pad, Top = y, Width = 780, Text = "Журнал:", Font = new Font(Font, FontStyle.Bold) });
@@ -221,6 +269,7 @@ public class MainForm : Form
         Controls.Add(_logBox);
 
         RefreshMappingPanel();
+        RefreshAxisPanel();
     }
 
     /// <summary>Rebuilds one row per known button id: [pressed dot] [name on phone] [display name input] [vJoy # input].</summary>
@@ -267,6 +316,64 @@ public class MainForm : Form
         }
 
         _mappingPanel.ResumeLayout();
+    }
+
+    /// <summary>Rebuilds one row per known axis (knob) id: [value bar] [name on
+    /// phone] [display name input] [vJoy axis dropdown].</summary>
+    private void RefreshAxisPanel()
+    {
+        _axisPanel.SuspendLayout();
+        _axisPanel.Controls.Clear();
+        _axisInputs.Clear();
+        _axisNameInputs.Clear();
+        _axisBars.Clear();
+
+        var ids = _mapping.AxisEntries.Keys
+            .OrderBy(id => _mapping.AxisEntries[id].VjoyAxisIndex).ToList();
+        _axisEmptyHint.Visible = ids.Count == 0;
+        _axisPanel.Visible = ids.Count > 0;
+
+        foreach (var id in ids)
+        {
+            var entry = _mapping.AxisEntries[id];
+            var row = new Panel { Width = 760, Height = 32, Margin = new Padding(2) };
+
+            var bar = new ProgressBar { Left = 0, Top = 6, Width = 60, Height = 16, Minimum = 0, Maximum = 100 };
+            row.Controls.Add(bar);
+            _axisBars[id] = bar;
+
+            var idLabel = new Label { Left = 68, Top = 7, Width = 60, Text = id, ForeColor = Color.Gray };
+            row.Controls.Add(idLabel);
+
+            var nameInput = new TextBox { Left = 132, Top = 4, Width = 280, Text = entry.DisplayName };
+            row.Controls.Add(nameInput);
+            _axisNameInputs[id] = nameInput;
+
+            var axisLabel = new Label { Left = 422, Top = 7, Width = 60, Text = "vJoy ось" };
+            row.Controls.Add(axisLabel);
+
+            var combo = new ComboBox { Left = 488, Top = 3, Width = 90, DropDownStyle = ComboBoxStyle.DropDownList };
+            combo.Items.AddRange(VJoy.ExtraAxisLabels.Cast<object>().ToArray());
+            combo.SelectedIndex = Math.Clamp(entry.VjoyAxisIndex, 0, VJoy.ExtraAxisLabels.Length - 1);
+            row.Controls.Add(combo);
+            _axisInputs[id] = combo;
+
+            _axisPanel.Controls.Add(row);
+        }
+
+        _axisPanel.ResumeLayout();
+    }
+
+    private void SaveAxisMapping()
+    {
+        foreach (var id in _axisInputs.Keys)
+        {
+            if (!_mapping.AxisEntries.TryGetValue(id, out var entry)) continue;
+            entry.VjoyAxisIndex = _axisInputs[id].SelectedIndex;
+            entry.DisplayName = _axisNameInputs[id].Text.Trim();
+        }
+        _mapping.Save();
+        AppendLog("Маппинг колёсиков сохранён.");
     }
 
     private void StartUp()
@@ -571,6 +678,28 @@ public class MainForm : Form
             if (_pressedDots.TryGetValue(id, out var dot))
             {
                 UiThread(() => dot.ForeColor = pressed ? Color.LimeGreen : Color.DimGray);
+            }
+        }
+
+        // Same auto-discovery pattern for rotary-knob axes (ABS, TC, brake
+        // balance, etc) — phone decides how many exist, PC auto-assigns the
+        // next free vJoy extra axis.
+        var axesNew = _mapping.EnsureAxisEntriesFor(state.Axes.Keys, state.AxisLabels);
+        if (axesNew)
+        {
+            _mapping.Save();
+            UiThread(RefreshAxisPanel);
+        }
+
+        foreach (var (id, value) in state.Axes)
+        {
+            if (_mapping.AxisEntries.TryGetValue(id, out var axisEntry))
+                VJoy.SetExtraAxis(axisEntry.VjoyAxisIndex, value);
+
+            if (_axisBars.TryGetValue(id, out var bar))
+            {
+                var pct = (int)Math.Clamp(value * 100, 0, 100);
+                UiThread(() => bar.Value = pct);
             }
         }
 
