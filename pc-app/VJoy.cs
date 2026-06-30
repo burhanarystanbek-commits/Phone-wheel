@@ -19,6 +19,18 @@ public static class VJoy
     public const int HID_USAGE_RX = 0x33;
     public const int HID_USAGE_RY = 0x34;
     public const int HID_USAGE_RZ = 0x35;
+    public const int HID_USAGE_SLIDER  = 0x36;
+    public const int HID_USAGE_DIAL    = 0x37;
+
+    /// <summary>Extra rotary-knob axes (ABS bias, traction control, brake
+    /// balance, etc) map onto these five vJoy axes — everything besides the
+    /// three already used for steer/throttle/brake. Order here is the order
+    /// knobs get auto-assigned in, matching ExtraAxisLabels below.</summary>
+    public static readonly int[] ExtraAxisIds =
+        { HID_USAGE_RX, HID_USAGE_RY, HID_USAGE_RZ, HID_USAGE_SLIDER, HID_USAGE_DIAL };
+
+    public static readonly string[] ExtraAxisLabels =
+        { "Rx", "Ry", "Rz", "Slider", "Dial" };
 
     public const int AxisMin = 0;
     public const int AxisMax = 32767;
@@ -153,5 +165,18 @@ public static class VJoy
     {
         if (!Acquired || buttonNumber <= 0) return;
         SetBtn(pressed, DeviceId, (byte)buttonNumber);
+    }
+
+    /// <summary>Sets one of the extra rotary-knob axes (index 0..4, see
+    /// ExtraAxisIds) to a value in 0..1. Used for user-defined knobs like
+    /// ABS bias, traction control level, or brake balance — anything that
+    /// isn't steer/throttle/brake but still needs to be a continuous axis
+    /// rather than a button.</summary>
+    public static void SetExtraAxis(int axisIndex, double zeroToOne)
+    {
+        if (!Acquired) return;
+        if (axisIndex < 0 || axisIndex >= ExtraAxisIds.Length) return;
+        var v = Math.Clamp((int)(zeroToOne * AxisMax), AxisMin, AxisMax);
+        SetAxis(v, DeviceId, ExtraAxisIds[axisIndex]);
     }
 }
