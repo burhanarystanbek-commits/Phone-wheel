@@ -20,11 +20,31 @@ public class ButtonMapEntry
     public string DisplayName { get; set; } = "";
 }
 
+/// <summary>
+/// Maps a rotary-knob id from the phone ("axis_1", "axis_2", ...) to one of
+/// vJoy's 5 extra continuous axes (Rx, Ry, Rz, Slider, Dial — see
+/// VJoy.ExtraAxisIds), plus a friendly display name. Same auto-discovery
+/// pattern as ButtonMapEntry: the phone decides how many knobs exist, the
+/// PC decides which vJoy axis each one drives.
+/// </summary>
+public class AxisMapEntry
+{
+    /// <summary>Index into VJoy.ExtraAxisIds (0..4), not the raw HID usage
+    /// id — keeps the PC UI's dropdown simple ("Rx", "Ry", ... by name).</summary>
+    public int VjoyAxisIndex { get; set; } = 0;
+
+    public string DisplayName { get; set; } = "";
+}
+
 public class Mapping
 {
     /// <summary>buttonId -> mapping entry. Grows automatically as new
     /// buttons show up from the phone; nothing here is fixed in advance.</summary>
     public Dictionary<string, ButtonMapEntry> Entries { get; set; } = new();
+
+    /// <summary>axisId -> mapping entry for rotary knobs (ABS, TC, brake
+    /// balance, etc). Same auto-discovery growth pattern as Entries.</summary>
+    public Dictionary<string, AxisMapEntry> AxisEntries { get; set; } = new();
 
     private static string ConfigPath() =>
         Path.Combine(AppContext.BaseDirectory, "mapping.json");
@@ -82,4 +102,34 @@ public class Mapping
 
     public const string GameHint =
         "Игра → Options/Settings → Controls → Steering Wheel → Buttons → назначь vJoy Button N на нужное действие.";
+
+    /// <summary>Same auto-discovery growth pattern as EnsureEntriesFor, but
+    /// for rotary-knob axes. Auto-assigns the next free vJoy extra-axis slot
+    /// (0..4) to any newly-seen axis id, wrapping back to 0 if all 5 are
+    /// already taken (rare — 5 knobs is already a lot).</summary>
+    public bool EnsureAxisEntriesFor(IEnumerable<string> axisIds, IDictionary<string, string> labels)
+    {
+        var changed = false;
+        foreach (var id in axisIds)
+        {
+            if (!AxisEntries.ContainsKey(id))
+            {
+                var used = AxisEntries.Values.Select(e => e.VjoyAxisIndex).ToHashSet();
+                var nextIdx = 0;
+                while (used.Contains(nextIdx) && nextIdx < VJoy.ExtraAxisIds.Length - 1) nextIdx++;
+                AxisEntries[id] = new AxisMapEntry
+                {
+                    VjoyAxisIndex = nextIdx,
+                    DisplayName = labels.TryGetValue(id, out var lbl) ? lbl : id
+                };
+                changed = true;
+            }
+            else if (string.IsNullOrEmpty(AxisEntries[id].DisplayName) && labels.TryGetValue(id, out var lbl2))
+            {
+                AxisEntries[id].DisplayName = lbl2;
+                changed = true;
+            }
+        }
+        return changed;
+    }
 }
