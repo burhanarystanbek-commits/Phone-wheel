@@ -389,7 +389,7 @@ class MainActivity : Activity(), SensorEventListener {
         // orientation[2] is roll in the remapped landscape frame —
         // left tilt = negative, right tilt = positive, so negate for
         // intuitive "tilt right = steer right" behaviour.
-        val rawRoll = orientation[2] * 180f / PI.toFloat()  // positive = tilt right = steer right
+        val rawRoll = -orientation[2] * 180f / PI.toFloat()  // positive = tilt right = steer right
 
         // Low-pass filter — heavy smoothing, greatly reduces sensor noise.
         smoothedRoll = if (firstSample) {
