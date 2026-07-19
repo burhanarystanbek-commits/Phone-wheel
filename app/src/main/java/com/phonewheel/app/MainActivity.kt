@@ -244,8 +244,22 @@ class MainActivity : Activity(), SensorEventListener {
 
     private lateinit var sensorManager: SensorManager
     private var rotSensor: Sensor? = null
-    private val rotMatrix   = FloatArray(9)
-    private val orientation = FloatArray(3)
+    private val rotMatrix      = FloatArray(9)
+    private val remappedMatrix = FloatArray(9)   // axes corrected for landscape hold
+    private val orientation    = FloatArray(3)
+
+    // Low-pass filter: smooth raw sensor value so a momentary bump doesn't
+    // snap the steering. Alpha=0.15 = heavy smoothing, good for gyro noise.
+    private val LP_ALPHA = 0.15f
+    private var smoothedRoll = 0f
+    private var firstSample  = true
+
+    // Calibration: collect N samples on "Центр" press and use their average
+    // instead of a single instantaneous reading — eliminates the 1-2° error
+    // that comes from pressing the button exactly at a sensor noise peak.
+    private val calibSamples   = mutableListOf<Float>()
+    private var calibrating    = false
+    private val CALIB_FRAMES   = 30   // ~300ms at 100Hz sensor rate
 
     private var rollDeg       = 0f
     private var centerRoll    = 0f
@@ -323,6 +337,9 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
+        firstSample = true  // reset low-pass filter on resume
+        calibrating = false
+        calibSamples.clear()
         rotSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
     }
 
@@ -345,18 +362,54 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR ||
-            event.sensor.type == Sensor.TYPE_GAME_ROTATION_VECTOR) {
-            SensorManager.getRotationMatrixFromVector(rotMatrix, event.values)
-            SensorManager.getOrientation(rotMatrix, orientation)
-            // Приложение всегда держат в landscape (см. манифест), поэтому
-            // естественные portrait-оси повёрнуты на 90°: наклон влево-вправо
-            // в landscape-хвате соответствует оси pitch (X), а не roll (Y) —
-            // roll в этом хвате реагирует на наклон вперёд-назад, отсюда и баг.
-            rollDeg = -orientation[1] * 180f / PI.toFloat()
-            val raw = (rollDeg - centerRoll) / maxSteerAngle
-            steer = raw.coerceIn(-1f, 1f).let { if (abs(it) < 0.015f) 0f else it }
+        if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR &&
+            event.sensor.type != Sensor.TYPE_GAME_ROTATION_VECTOR) return
+
+        SensorManager.getRotationMatrixFromVector(rotMatrix, event.values)
+
+        // Remap axes for landscape (horizontal) hold.
+        // The phone is held like a steering wheel, rotated 90° from portrait.
+        // In this orientation:
+        //   - physical "left/right tilt" = what we want as steer input
+        //   - without remapping, getOrientation gives portrait axes and
+        //     the left/right tilt maps to pitch (index 1) incorrectly.
+        // Remapping: new X = old Y (along long edge), new Z = old X (normal axis)
+        // gives roll (index 2) as the left/right tilt in landscape hold.
+        SensorManager.remapCoordinateSystem(
+            rotMatrix,
+            SensorManager.AXIS_Y,
+            SensorManager.AXIS_MINUS_X,
+            remappedMatrix
+        )
+        SensorManager.getOrientation(remappedMatrix, orientation)
+
+        // orientation[2] is roll in the remapped landscape frame —
+        // left tilt = negative, right tilt = positive, so negate for
+        // intuitive "tilt right = steer right" behaviour.
+        val rawRoll = -orientation[2] * 180f / PI.toFloat()
+
+        // Low-pass filter — heavy smoothing, greatly reduces sensor noise.
+        smoothedRoll = if (firstSample) {
+            firstSample = false
+            rawRoll
+        } else {
+            smoothedRoll + LP_ALPHA * (rawRoll - smoothedRoll)
         }
+        rollDeg = smoothedRoll
+
+        // Calibration: collect samples after "Центр" is pressed.
+        if (calibrating) {
+            calibSamples.add(rawRoll)  // collect raw for averaging
+            if (calibSamples.size >= CALIB_FRAMES) {
+                centerRoll = calibSamples.average().toFloat()
+                calibSamples.clear()
+                calibrating = false
+                smoothedRoll = centerRoll  // snap filter to new center
+            }
+        }
+
+        val raw = (rollDeg - centerRoll) / maxSteerAngle
+        steer = raw.coerceIn(-1f, 1f).let { v -> if (abs(v) < 0.015f) 0f else v }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -471,8 +524,21 @@ class MainActivity : Activity(), SensorEventListener {
             setTextColor(Color.WHITE)
             background = roundRect(Color.parseColor("#1e2536"), dp(10).toFloat())
             setOnClickListener {
-                centerRoll = rollDeg
-                Toast.makeText(context, "Центр установлен", Toast.LENGTH_SHORT).show()
+                // Start calibration: collect CALIB_FRAMES sensor readings and
+                // use their average as the new center. Shows "Калибровка..." for
+                // ~300ms then confirms. This eliminates the 1-2° drift that comes
+                // from using a single instantaneous sample as the zero point.
+                if (!calibrating) {
+                    calibSamples.clear()
+                    calibrating = true
+                    text = "⏳"
+                    isEnabled = false
+                    handler.postDelayed({
+                        text = "Центр"
+                        isEnabled = true
+                        Toast.makeText(context, "Центр установлен", Toast.LENGTH_SHORT).show()
+                    }, (CALIB_FRAMES * 12L) + 100L)
+                }
             }
         }
         btnRow.addView(connectBtn, lp(0, dp(44), 1f, endMargin = dp(4)))
