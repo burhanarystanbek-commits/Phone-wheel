@@ -328,6 +328,9 @@ class MainActivity : Activity(), SensorEventListener {
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         layoutStore = LayoutStore(this)
         knobLayoutStore = KnobLayoutStore(this)
+        // Restore saved steering angle (default 45°)
+        val prefs = getSharedPreferences("phonewheel_settings", Context.MODE_PRIVATE)
+        maxSteerAngle = prefs.getFloat("maxSteerAngle", 45f)
         setupSensors()
         buildUi()
         setupConnectionCallbacks()
@@ -541,25 +544,16 @@ class MainActivity : Activity(), SensorEventListener {
                 }
             }
         }
-        btnRow.addView(connectBtn, lp(0, dp(44), 1f, endMargin = dp(4)))
-        btnRow.addView(centerBtn,  lp(0, dp(44), 1f))
-        center.addView(btnRow, lp(MATCH, dp(44)).also { it.setMargins(0, dp(4), 0, 0) })
-
-        // angle label + seekbar
-        val angleLabel = tv("Угол: 45°", 11f, Color.parseColor("#6b7394"))
-        center.addView(angleLabel, lp(MATCH, dp(22)).also { it.setMargins(0, dp(6), 0, 0) })
-        val angleSeek = SeekBar(this).apply {
-            max = 80; progress = 35
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, u: Boolean) {
-                    maxSteerAngle = (10 + p).toFloat()
-                    angleLabel.text = "Угол: ${maxSteerAngle.toInt()}°"
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
+        val settingsBtn = Button(this).apply {
+            text = "⚙ Угол"
+            setTextColor(Color.parseColor("#6b7394"))
+            background = roundRect(Color.parseColor("#0d1117"), dp(10).toFloat())
+            setOnClickListener { showSteeringSettings() }
         }
-        center.addView(angleSeek, lp(MATCH, dp(32)))
+        btnRow.addView(connectBtn,  lp(0, dp(44), 1f, endMargin = dp(4)))
+        btnRow.addView(centerBtn,   lp(0, dp(44), 1f, endMargin = dp(4)))
+        btnRow.addView(settingsBtn, lp(0, dp(44), 1f))
+        center.addView(btnRow, lp(MATCH, dp(44)).also { it.setMargins(0, dp(4), 0, 0) })
 
         // wheel
         wheelView = WheelView(this)
@@ -843,6 +837,60 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun persistCurrentKnobLayout() {
         knobLayoutStore.save(customKnobs.map { it.toLayout() }, nextAxisId)
+    }
+
+    /** Small settings dialog for the steering angle — keeps the main screen
+     *  clean. Opened via the "⚙ Угол" button. Persists the value to
+     *  SharedPreferences so it survives app restarts. */
+    private fun showSteeringSettings() {
+        val prefs = getSharedPreferences("phonewheel_settings", Context.MODE_PRIVATE)
+
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(16), dp(24), dp(8))
+        }
+
+        val label = TextView(this).apply {
+            text = "Угол поворота: ${maxSteerAngle.toInt()}°"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            gravity = Gravity.CENTER
+        }
+        layout.addView(label)
+
+        val seek = SeekBar(this).apply {
+            max = 80                                     // range: 10°..90°
+            progress = (maxSteerAngle - 10f).toInt().coerceIn(0, 80)
+            setPadding(0, dp(12), 0, dp(12))
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    maxSteerAngle = (10 + p).toFloat()
+                    label.text = "Угол поворота: ${maxSteerAngle.toInt()}°"
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {
+                    prefs.edit().putFloat("maxSteerAngle", maxSteerAngle).apply()
+                }
+            })
+        }
+        layout.addView(seek)
+
+        val hint = TextView(this).apply {
+            text = "Рекомендуется 30–50° для обычного вождения.\nМеньший угол — точнее, больший — реалистичнее."
+            setTextColor(Color.parseColor("#6b7394"))
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(8))
+        }
+        layout.addView(hint)
+
+        AlertDialog.Builder(this)
+            .setTitle("Настройки руля")
+            .setView(layout)
+            .setPositiveButton("Закрыть") { _, _ ->
+                prefs.edit().putFloat("maxSteerAngle", maxSteerAngle).apply()
+            }
+            .show()
     }
 
     private fun setConnMode(kind: TransportKind, usbBtn: Button, wifiBtn: Button, btBtn: Button) {
