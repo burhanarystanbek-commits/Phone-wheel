@@ -389,7 +389,7 @@ class MainActivity : Activity(), SensorEventListener {
         // orientation[2] is roll in the remapped landscape frame —
         // left tilt = negative, right tilt = positive, so negate for
         // intuitive "tilt right = steer right" behaviour.
-        val rawRoll = -orientation[2] * 180f / PI.toFloat()
+        val rawRoll = orientation[2] * 180f / PI.toFloat()  // positive = tilt right = steer right
 
         // Low-pass filter — heavy smoothing, greatly reduces sensor noise.
         smoothedRoll = if (firstSample) {
@@ -624,13 +624,23 @@ class MainActivity : Activity(), SensorEventListener {
             setPadding(dp(8), dp(6), dp(8), dp(6))
             visibility = View.GONE
         }
+        // Row 1: add buttons
         val addBtn = Button(this).apply {
-            text = "+ Кнопка"
+            text = "+ Кнопку"
             setTextColor(Color.WHITE)
             background = roundRect(Color.parseColor("#5b4fe8"), dp(10).toFloat())
             setOnClickListener { addNewButton() }
         }
         editToolbar.addView(addBtn, lp(0, dp(34), 1f, endMargin = dp(4)))
+
+        val removeBtn = Button(this).apply {
+            text = "− Кнопку"
+            setTextColor(Color.parseColor("#ff6060"))
+            background = roundRect(Color.parseColor("#2a1020"), dp(10).toFloat())
+            setOnClickListener { removeLastButton() }
+        }
+        editToolbar.addView(removeBtn, lp(0, dp(34), 1f, endMargin = dp(4)))
+
         val addKnobBtn = Button(this).apply {
             text = "+ Колёсико"
             setTextColor(Color.WHITE)
@@ -638,8 +648,17 @@ class MainActivity : Activity(), SensorEventListener {
             setOnClickListener { addNewKnob() }
         }
         editToolbar.addView(addKnobBtn, lp(0, dp(34), 1f, endMargin = dp(4)))
-        val hintLbl = tv("тяни • уголок = размер • тап = переим. • держи = удалить", 8f, Color.parseColor("#6b7394"))
-        editToolbar.addView(hintLbl, lp(0, dp(34), 1.2f, endMargin = dp(4)))
+
+        val removeKnobBtn = Button(this).apply {
+            text = "− Колёсико"
+            setTextColor(Color.parseColor("#ff6060"))
+            background = roundRect(Color.parseColor("#1a2a1a"), dp(10).toFloat())
+            setOnClickListener { removeLastKnob() }
+        }
+        editToolbar.addView(removeKnobBtn, lp(0, dp(34), 1f, endMargin = dp(4)))
+
+        val hintLbl = tv("тяни • уголок=размер • тап=переим.", 8f, Color.parseColor("#6b7394"))
+        editToolbar.addView(hintLbl, lp(0, dp(34), 0.8f, endMargin = dp(4)))
         val doneBtn = Button(this).apply {
             text = "Готово"
             setTextColor(Color.parseColor("#22dc82"))
@@ -744,6 +763,43 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun persistCurrentLayout() {
         layoutStore.save(customButtons.map { it.toLayout() }, nextButtonId)
+    }
+
+    /** Removes the last added button — mirrors the long-press delete but
+     *  accessible from the toolbar without needing to long-press on a small
+     *  target. Shows a confirmation with the button's name so nothing gets
+     *  deleted by accident. */
+    private fun removeLastButton() {
+        val last = customButtons.lastOrNull() ?: run {
+            Toast.makeText(this, "Нет кнопок для удаления", Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Удалить кнопку «${last.labelText}»?")
+            .setPositiveButton("Удалить") { _, _ ->
+                buttonOverlay.removeView(last)
+                customButtons.remove(last)
+                persistCurrentLayout()
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    /** Removes the last added knob — same pattern as removeLastButton. */
+    private fun removeLastKnob() {
+        val last = customKnobs.lastOrNull() ?: run {
+            Toast.makeText(this, "Нет колёсиков для удаления", Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Удалить колёсико «${last.labelText}»?")
+            .setPositiveButton("Удалить") { _, _ ->
+                buttonOverlay.removeView(last)
+                customKnobs.remove(last)
+                persistCurrentKnobLayout()
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     // ─── Rotary knobs (ABS / TC / brake balance / ...) ─────────────────────
