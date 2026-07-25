@@ -248,11 +248,17 @@ class MainActivity : Activity(), SensorEventListener {
     private val remappedMatrix = FloatArray(9)   // axes corrected for landscape hold
     private val orientation    = FloatArray(3)
 
-    // Low-pass filter: smooth raw sensor value so a momentary bump doesn't
-    // snap the steering. Alpha=0.15 = heavy smoothing, good for gyro noise.
-    private val LP_ALPHA = 0.15f
-    private var smoothedRoll = 0f
-    private var firstSample  = true
+    // Two-pass (cascaded) low-pass filter — passes the sensor value through
+    // the same exponential filter twice. This gives a steeper rolloff than a
+    // single-pass filter at the same alpha, meaning gyro high-frequency noise
+    // is suppressed much more aggressively without introducing more lag at
+    // low frequencies (slow, intentional steering movements). The user can
+    // tune alpha via the settings dialog: lower = smoother but slightly more
+    // lag, higher = more responsive but potentially more jitter.
+    private var lpAlpha     = 0.10f   // default: heavy smoothing, saved in prefs
+    private var smooth1     = 0f      // first-pass output
+    private var smooth2     = 0f      // second-pass output (final value)
+    private var firstSample = true
 
     // Calibration: collect N samples on "Центр" press and use their average
     // instead of a single instantaneous reading — eliminates the 1-2° error
@@ -328,9 +334,10 @@ class MainActivity : Activity(), SensorEventListener {
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         layoutStore = LayoutStore(this)
         knobLayoutStore = KnobLayoutStore(this)
-        // Restore saved steering angle (default 45°)
+        // Restore saved steering settings
         val prefs = getSharedPreferences("phonewheel_settings", Context.MODE_PRIVATE)
         maxSteerAngle = prefs.getFloat("maxSteerAngle", 45f)
+        lpAlpha = prefs.getFloat("lpAlpha", 0.10f)
         setupSensors()
         buildUi()
         setupConnectionCallbacks()
@@ -340,7 +347,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
-        firstSample = true  // reset low-pass filter on resume
+        firstSample = true  // reset two-pass filter on resume
         calibrating = false
         calibSamples.clear()
         rotSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
@@ -391,14 +398,16 @@ class MainActivity : Activity(), SensorEventListener {
         // intuitive "tilt right = steer right" behaviour.
         val rawRoll = orientation[2] * 180f / PI.toFloat()  // positive = tilt right = steer right
 
-        // Low-pass filter — heavy smoothing, greatly reduces sensor noise.
-        smoothedRoll = if (firstSample) {
+        // Two-pass low-pass filter.
+        if (firstSample) {
             firstSample = false
-            rawRoll
+            smooth1 = rawRoll
+            smooth2 = rawRoll
         } else {
-            smoothedRoll + LP_ALPHA * (rawRoll - smoothedRoll)
+            smooth1 = smooth1 + lpAlpha * (rawRoll - smooth1)
+            smooth2 = smooth2 + lpAlpha * (smooth1 - smooth2)
         }
-        rollDeg = smoothedRoll
+        rollDeg = smooth2
 
         // Calibration: collect samples after "Центр" is pressed.
         if (calibrating) {
@@ -407,7 +416,7 @@ class MainActivity : Activity(), SensorEventListener {
                 centerRoll = calibSamples.average().toFloat()
                 calibSamples.clear()
                 calibrating = false
-                smoothedRoll = centerRoll  // snap filter to new center
+                smooth1 = centerRoll; smooth2 = centerRoll  // snap filter to new center
             }
         }
 
@@ -906,22 +915,23 @@ class MainActivity : Activity(), SensorEventListener {
             setPadding(dp(24), dp(16), dp(24), dp(8))
         }
 
-        val label = TextView(this).apply {
+        // ── Angle slider ──
+        val angleLabel = TextView(this).apply {
             text = "Угол поворота: ${maxSteerAngle.toInt()}°"
             setTextColor(Color.WHITE)
             textSize = 14f
             gravity = Gravity.CENTER
         }
-        layout.addView(label)
+        layout.addView(angleLabel)
 
-        val seek = SeekBar(this).apply {
-            max = 80                                     // range: 10°..90°
+        val angleSeek = SeekBar(this).apply {
+            max = 80
             progress = (maxSteerAngle - 10f).toInt().coerceIn(0, 80)
-            setPadding(0, dp(12), 0, dp(12))
+            setPadding(0, dp(8), 0, dp(4))
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
                     maxSteerAngle = (10 + p).toFloat()
-                    label.text = "Угол поворота: ${maxSteerAngle.toInt()}°"
+                    angleLabel.text = "Угол поворота: ${maxSteerAngle.toInt()}°"
                 }
                 override fun onStartTrackingTouch(sb: SeekBar?) {}
                 override fun onStopTrackingTouch(sb: SeekBar?) {
@@ -929,22 +939,73 @@ class MainActivity : Activity(), SensorEventListener {
                 }
             })
         }
-        layout.addView(seek)
+        layout.addView(angleSeek)
 
-        val hint = TextView(this).apply {
-            text = "Рекомендуется 30–50° для обычного вождения.\nМеньший угол — точнее, больший — реалистичнее."
+        layout.addView(TextView(this).apply {
+            text = "Меньший угол — точнее, больший — реалистичнее."
+            setTextColor(Color.parseColor("#6b7394"))
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(16))
+        })
+
+        // ── Smoothness slider ──
+        // lpAlpha 0.05..0.40 mapped to SeekBar 0..35 (step 0.01)
+        // Low alpha = very smooth but tiny extra lag. High alpha = responsive
+        // but may jitter. Default 0.10 is a good balance.
+        fun alphaToProgress(a: Float) = ((a - 0.05f) * 100f).toInt().coerceIn(0, 35)
+        fun progressToAlpha(p: Int) = (0.05f + p * 0.01f).coerceIn(0.05f, 0.40f)
+
+        fun smoothLabel(a: Float) = when {
+            a <= 0.08f -> "Сглаживание: максимальное (очень плавно)"
+            a <= 0.15f -> "Сглаживание: высокое (рекомендуется)"
+            a <= 0.25f -> "Сглаживание: среднее"
+            else       -> "Сглаживание: минимальное (быстро, но может дёргаться)"
+        }
+
+        val smoothLabel = TextView(this).apply {
+            text = smoothLabel(lpAlpha)
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            gravity = Gravity.CENTER
+        }
+        layout.addView(smoothLabel)
+
+        val smoothSeek = SeekBar(this).apply {
+            max = 35
+            progress = alphaToProgress(lpAlpha)
+            setPadding(0, dp(8), 0, dp(4))
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    lpAlpha = progressToAlpha(p)
+                    smoothLabel.text = smoothLabel(lpAlpha)
+                    // Reset filter so new alpha takes effect immediately
+                    firstSample = true
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {
+                    prefs.edit().putFloat("lpAlpha", lpAlpha).apply()
+                }
+            })
+        }
+        layout.addView(smoothSeek)
+
+        layout.addView(TextView(this).apply {
+            text = "Если руль дёргается — увеличь сглаживание.\nЕсли запаздывает — уменьши."
             setTextColor(Color.parseColor("#6b7394"))
             textSize = 11f
             gravity = Gravity.CENTER
             setPadding(0, 0, 0, dp(8))
-        }
-        layout.addView(hint)
+        })
 
         AlertDialog.Builder(this)
             .setTitle("Настройки руля")
             .setView(layout)
             .setPositiveButton("Закрыть") { _, _ ->
-                prefs.edit().putFloat("maxSteerAngle", maxSteerAngle).apply()
+                prefs.edit()
+                    .putFloat("maxSteerAngle", maxSteerAngle)
+                    .putFloat("lpAlpha", lpAlpha)
+                    .apply()
             }
             .show()
     }
