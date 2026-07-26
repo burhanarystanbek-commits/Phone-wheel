@@ -382,26 +382,24 @@ class MainActivity : Activity(), SensorEventListener {
 
         SensorManager.getRotationMatrixFromVector(rotMatrix, event.values)
 
-        // Remap axes for landscape (horizontal) hold.
-        // The phone is held like a steering wheel, rotated 90° from portrait.
-        // In this orientation:
-        //   - physical "left/right tilt" = what we want as steer input
-        //   - without remapping, getOrientation gives portrait axes and
-        //     the left/right tilt maps to pitch (index 1) incorrectly.
-        // Remapping: new X = old Y (along long edge), new Z = old X (normal axis)
-        // gives roll (index 2) as the left/right tilt in landscape hold.
+        // Remap axes for the actual hold position:
+        // - Phone horizontal (landscape), screen facing user, camera pointing away
+        // - In this orientation, tilting left/right = rotation around Z axis
+        // AXIS_X = long edge of phone (left-right), AXIS_Z = screen normal (forward)
+        // This maps orientation[1] (pitch) to left/right tilt correctly,
+        // giving full ±90° range instead of the limited ±76° from wrong axis mapping.
         SensorManager.remapCoordinateSystem(
             rotMatrix,
-            SensorManager.AXIS_Y,
-            SensorManager.AXIS_MINUS_X,
+            SensorManager.AXIS_X,
+            SensorManager.AXIS_Z,
             remappedMatrix
         )
         SensorManager.getOrientation(remappedMatrix, orientation)
 
-        // orientation[2] is roll in the remapped landscape frame —
-        // left tilt = negative, right tilt = positive, so negate for
-        // intuitive "tilt right = steer right" behaviour.
-        val rawRoll = orientation[2] * 180f / PI.toFloat()  // positive = tilt right = steer right
+        // orientation[1] = pitch in the remapped frame = left/right tilt
+        // when holding horizontally with screen toward you, camera forward.
+        // Negate so tilt right = positive = steer right.
+        val rawRoll = -orientation[1] * 180f / PI.toFloat()
 
         // Two-pass low-pass filter.
         if (firstSample) {
