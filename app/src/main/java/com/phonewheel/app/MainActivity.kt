@@ -255,10 +255,14 @@ class MainActivity : Activity(), SensorEventListener {
     // low frequencies (slow, intentional steering movements). The user can
     // tune alpha via the settings dialog: lower = smoother but slightly more
     // lag, higher = more responsive but potentially more jitter.
-    private var lpAlpha     = 0.10f   // default: heavy smoothing, saved in prefs
+    private var lpAlpha     = 0.25f   // default: balanced (was 0.10 = too laggy)
     private var smooth1     = 0f      // first-pass output
     private var smooth2     = 0f      // second-pass output (final value)
     private var firstSample = true
+    // Gamma (response curve): 1.0 = linear, 2.0 = very soft centre/sharp edges.
+    // Default 1.5: comfortable for most driving styles — centre feels gentle,
+    // hard turns are still reachable without exaggerated phone angle.
+    private var steerGamma  = 1.5f
 
     // Calibration: collect N samples on "Центр" press and use their average
     // instead of a single instantaneous reading — eliminates the 1-2° error
@@ -337,7 +341,8 @@ class MainActivity : Activity(), SensorEventListener {
         // Restore saved steering settings
         val prefs = getSharedPreferences("phonewheel_settings", Context.MODE_PRIVATE)
         maxSteerAngle = prefs.getFloat("maxSteerAngle", 45f)
-        lpAlpha = prefs.getFloat("lpAlpha", 0.10f)
+        lpAlpha    = prefs.getFloat("lpAlpha", 0.25f)
+        steerGamma = prefs.getFloat("steerGamma", 1.5f)
         setupSensors()
         buildUi()
         setupConnectionCallbacks()
@@ -421,7 +426,12 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
         val raw = (rollDeg - centerRoll) / maxSteerAngle
-        steer = raw.coerceIn(-1f, 1f).let { v -> if (abs(v) < 0.015f) 0f else v }
+        val clamped = raw.coerceIn(-1f, 1f)
+        // Apply gamma response curve: sign(x) * |x|^gamma
+        // Keeps small corrections gentle while still allowing full lock.
+        val curved = if (abs(clamped) < 0.015f) 0f
+            else Math.signum(clamped) * Math.pow(abs(clamped).toDouble(), steerGamma.toDouble()).toFloat()
+        steer = curved
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -998,6 +1008,53 @@ class MainActivity : Activity(), SensorEventListener {
             setPadding(0, 0, 0, dp(8))
         })
 
+        // ── Gamma (response curve) slider ──
+        // Range 1.0..3.0, step 0.1, mapped to SeekBar 0..20
+        fun gammaToProgress(g: Float) = ((g - 1.0f) * 10f).toInt().coerceIn(0, 20)
+        fun progressToGamma(p: Int) = (1.0f + p * 0.1f).coerceIn(1.0f, 3.0f)
+
+        fun gammaLabel(g: Float) = when {
+            g <= 1.0f -> "Кривая: линейная (1.0) — одинаково по всему диапазону"
+            g <= 1.4f -> "Кривая: лёгкая (%.1f) — чуть мягче в центре".format(g)
+            g <= 1.8f -> "Кривая: средняя (%.1f) — рекомендуется ✓".format(g)
+            g <= 2.4f -> "Кривая: агрессивная (%.1f) — мягкий центр, резкие края".format(g)
+            else      -> "Кривая: очень агрессивная (%.1f) — для больших углов".format(g)
+        }
+
+        val gammaLbl = TextView(this).apply {
+            text = gammaLabel(steerGamma)
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(4), 0, 0)
+        }
+        layout.addView(gammaLbl)
+
+        val gammaSeek = SeekBar(this).apply {
+            max = 20
+            progress = gammaToProgress(steerGamma)
+            setPadding(0, dp(8), 0, dp(4))
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    steerGamma = progressToGamma(p)
+                    gammaLbl.text = gammaLabel(steerGamma)
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {
+                    prefs.edit().putFloat("steerGamma", steerGamma).apply()
+                }
+            })
+        }
+        layout.addView(gammaSeek)
+
+        layout.addView(TextView(this).apply {
+            text = "1.0 = линейно  •  1.5 = рекомендуется  •  2.0+ = точность в центре"
+            setTextColor(Color.parseColor("#6b7394"))
+            textSize = 10f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(8))
+        })
+
         AlertDialog.Builder(this)
             .setTitle("Настройки руля")
             .setView(layout)
@@ -1005,6 +1062,7 @@ class MainActivity : Activity(), SensorEventListener {
                 prefs.edit()
                     .putFloat("maxSteerAngle", maxSteerAngle)
                     .putFloat("lpAlpha", lpAlpha)
+                    .putFloat("steerGamma", steerGamma)
                     .apply()
             }
             .show()
