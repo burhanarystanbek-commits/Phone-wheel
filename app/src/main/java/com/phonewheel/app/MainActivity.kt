@@ -259,6 +259,11 @@ class MainActivity : Activity(), SensorEventListener {
     private var smooth1     = 0f      // first-pass output
     private var smooth2     = 0f      // second-pass output (final value)
     private var firstSample = true
+    // Progressive curve zone thresholds (fraction of maxSteerAngle):
+    // linearZone = where boost kicks in (~75°), sharpZone = where auto-complete starts (~85°)
+    private var linearZone = 0.83f   // default ~75°
+    private var sharpZone  = 0.94f   // default ~85°
+
     // Gamma (response curve): 1.0 = linear, 2.0 = very soft centre/sharp edges.
     // Default 1.5: comfortable for most driving styles — centre feels gentle,
     // hard turns are still reachable without exaggerated phone angle.
@@ -342,7 +347,9 @@ class MainActivity : Activity(), SensorEventListener {
         val prefs = getSharedPreferences("phonewheel_settings", Context.MODE_PRIVATE)
         maxSteerAngle = prefs.getFloat("maxSteerAngle", 45f)
         lpAlpha    = prefs.getFloat("lpAlpha", 0.25f)
-        steerGamma = prefs.getFloat("steerGamma", 1.5f)
+        steerGamma  = prefs.getFloat("steerGamma", 1.5f)
+        linearZone  = prefs.getFloat("linearZone", 0.83f)
+        sharpZone   = prefs.getFloat("sharpZone",  0.94f)
         setupSensors()
         buildUi()
         setupConnectionCallbacks()
@@ -382,24 +389,17 @@ class MainActivity : Activity(), SensorEventListener {
 
         SensorManager.getRotationMatrixFromVector(rotMatrix, event.values)
 
-        // Remap axes for the actual hold position:
-        // - Phone horizontal (landscape), screen facing user, camera pointing away
-        // - In this orientation, tilting left/right = rotation around Z axis
-        // AXIS_X = long edge of phone (left-right), AXIS_Z = screen normal (forward)
-        // This maps orientation[1] (pitch) to left/right tilt correctly,
-        // giving full ±90° range instead of the limited ±76° from wrong axis mapping.
+        // Remap axes for landscape (horizontal) hold, screen toward user.
         SensorManager.remapCoordinateSystem(
             rotMatrix,
-            SensorManager.AXIS_X,
-            SensorManager.AXIS_Z,
+            SensorManager.AXIS_Y,
+            SensorManager.AXIS_MINUS_X,
             remappedMatrix
         )
         SensorManager.getOrientation(remappedMatrix, orientation)
 
-        // orientation[1] = pitch in the remapped frame = left/right tilt
-        // when holding horizontally with screen toward you, camera forward.
-        // Negate so tilt right = positive = steer right.
-        val rawRoll = -orientation[1] * 180f / PI.toFloat()
+        // orientation[2] = roll in remapped frame = left/right tilt in landscape hold.
+        val rawRoll = -orientation[2] * 180f / PI.toFloat()
 
         // Two-pass low-pass filter.
         if (firstSample) {
@@ -425,10 +425,44 @@ class MainActivity : Activity(), SensorEventListener {
 
         val raw = (rollDeg - centerRoll) / maxSteerAngle
         val clamped = raw.coerceIn(-1f, 1f)
-        // Apply gamma response curve: sign(x) * |x|^gamma
-        // Keeps small corrections gentle while still allowing full lock.
-        val curved = if (abs(clamped) < 0.015f) 0f
-            else Math.signum(clamped) * Math.pow(abs(clamped).toDouble(), steerGamma.toDouble()).toFloat()
+        val absRaw = abs(clamped)
+
+        // Progressive steering curve:
+        //
+        //  Zone 1 — 0..linearZone  (0..75°): linear 1:1, precise control
+        //  Zone 2 — linearZone..sharpZone (75..85°): boosted 2x,
+        //           each extra degree of phone = 2 degrees of wheel
+        //  Zone 3 — sharpZone..1.0 (85..90°): auto-complete to full lock,
+        //           smoothly snaps to 1.0 so the last few degrees aren't
+        //           awkward to physically reach
+        //
+        // All thresholds are expressed as fractions of maxSteerAngle so
+        // they scale correctly when the user changes the angle setting.
+        // linearZone and sharpZone are instance fields, configurable from settings.
+
+        val curved = when {
+            absRaw < 0.015f   -> 0f          // dead zone
+            absRaw < linearZone -> {
+                // Zone 1: linear
+                clamped
+            }
+            absRaw < sharpZone -> {
+                // Zone 2: linear up to linearZone output, then 2x boost
+                val base     = linearZone               // output at zone boundary
+                val extra    = (absRaw - linearZone) * 2f  // 2x multiplier
+                val out      = (base + extra).coerceIn(0f, 1f)
+                Math.signum(clamped) * out
+            }
+            else -> {
+                // Zone 3: auto-complete — smooth ease-in to 1.0
+                // t goes 0..1 within this zone
+                val t = (absRaw - sharpZone) / (1f - sharpZone)
+                val zoneStart = (linearZone + (sharpZone - linearZone) * 2f)
+                    .coerceIn(0f, 1f)
+                val out = zoneStart + (1f - zoneStart) * t
+                Math.signum(clamped) * out.coerceIn(0f, 1f)
+            }
+        }
         steer = curved
     }
 
@@ -1053,6 +1087,71 @@ class MainActivity : Activity(), SensorEventListener {
             setPadding(0, 0, 0, dp(8))
         })
 
+        // ── Progressive curve zones ──
+        // linearZone: 0.60..0.95 (fraction of maxSteerAngle where boost starts)
+        // sharpZone:  always = linearZone + 0.05..0.15 (where auto-complete starts)
+        fun zoneToProgress(z: Float) = ((z - 0.60f) * 100f).toInt().coerceIn(0, 35)
+        fun progressToZone(p: Int)   = (0.60f + p * 0.01f).coerceIn(0.60f, 0.95f)
+        fun angleForZone(z: Float)   = (z * maxSteerAngle).toInt()
+
+        val linearLbl = TextView(this).apply {
+            text = "Начало резкости: ${angleForZone(linearZone)}° (из ${maxSteerAngle.toInt()}°)"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(8), 0, 0)
+        }
+        layout.addView(linearLbl)
+
+        val linearSeek = SeekBar(this).apply {
+            max = 35
+            progress = zoneToProgress(linearZone)
+            setPadding(0, dp(6), 0, dp(4))
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    linearZone = progressToZone(p)
+                    // Keep sharpZone at least 0.05 above linearZone
+                    if (sharpZone < linearZone + 0.05f) sharpZone = (linearZone + 0.08f).coerceIn(0f, 0.98f)
+                    linearLbl.text = "Начало резкости: ${angleForZone(linearZone)}° (из ${maxSteerAngle.toInt()}°)"
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        layout.addView(linearSeek)
+
+        val sharpLbl = TextView(this).apply {
+            text = "Начало автодокрутки: ${angleForZone(sharpZone)}°"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(4), 0, 0)
+        }
+        layout.addView(sharpLbl)
+
+        val sharpSeek = SeekBar(this).apply {
+            max = 35
+            progress = zoneToProgress(sharpZone)
+            setPadding(0, dp(6), 0, dp(4))
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    sharpZone = progressToZone(p).coerceAtLeast(linearZone + 0.05f)
+                    sharpLbl.text = "Начало автодокрутки: ${angleForZone(sharpZone)}°"
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        layout.addView(sharpSeek)
+
+        layout.addView(TextView(this).apply {
+            text = "0°→резкость: точное управление  •  резкость→автодокрутка: ускорение  •  остаток: сам до упора"
+            setTextColor(Color.parseColor("#6b7394"))
+            textSize = 10f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(8))
+        })
+
         AlertDialog.Builder(this)
             .setTitle("Настройки руля")
             .setView(layout)
@@ -1061,6 +1160,8 @@ class MainActivity : Activity(), SensorEventListener {
                     .putFloat("maxSteerAngle", maxSteerAngle)
                     .putFloat("lpAlpha", lpAlpha)
                     .putFloat("steerGamma", steerGamma)
+                    .putFloat("linearZone", linearZone)
+                    .putFloat("sharpZone", sharpZone)
                     .apply()
             }
             .show()
