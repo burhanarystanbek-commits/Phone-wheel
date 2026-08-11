@@ -244,37 +244,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     private lateinit var sensorManager: SensorManager
     private var rotSensor: Sensor? = null
-    private val rotMatrix      = FloatArray(9)
-    private val remappedMatrix = FloatArray(9)   // axes corrected for landscape hold
-    private val orientation    = FloatArray(3)
-
-    // Two-pass (cascaded) low-pass filter — passes the sensor value through
-    // the same exponential filter twice. This gives a steeper rolloff than a
-    // single-pass filter at the same alpha, meaning gyro high-frequency noise
-    // is suppressed much more aggressively without introducing more lag at
-    // low frequencies (slow, intentional steering movements). The user can
-    // tune alpha via the settings dialog: lower = smoother but slightly more
-    // lag, higher = more responsive but potentially more jitter.
-    private var lpAlpha     = 0.25f   // default: balanced (was 0.10 = too laggy)
-    private var smooth1     = 0f      // first-pass output
-    private var smooth2     = 0f      // second-pass output (final value)
-    private var firstSample = true
-    // Progressive curve zone thresholds (fraction of maxSteerAngle):
-    // linearZone = where boost kicks in (~75°), sharpZone = where auto-complete starts (~85°)
-    private var linearZone = 0.83f   // default ~75°
-    private var sharpZone  = 0.94f   // default ~85°
-
-    // Gamma (response curve): 1.0 = linear, 2.0 = very soft centre/sharp edges.
-    // Default 1.5: comfortable for most driving styles — centre feels gentle,
-    // hard turns are still reachable without exaggerated phone angle.
-    private var steerGamma  = 1.5f
-
-    // Calibration: collect N samples on "Центр" press and use their average
-    // instead of a single instantaneous reading — eliminates the 1-2° error
-    // that comes from pressing the button exactly at a sensor noise peak.
-    private val calibSamples   = mutableListOf<Float>()
-    private var calibrating    = false
-    private val CALIB_FRAMES   = 30   // ~300ms at 100Hz sensor rate
+    private val rotMatrix   = FloatArray(9)
+    private val orientation = FloatArray(3)
 
     private var rollDeg       = 0f
     private var centerRoll    = 0f
@@ -303,10 +274,7 @@ class MainActivity : Activity(), SensorEventListener {
     private val stateJson     = org.json.JSONObject()
     private val buttonsJson   = org.json.JSONObject()
     private val labelsJson    = org.json.JSONObject()
-    private val axesJson      = org.json.JSONObject()
-    private val axisLabelsJson = org.json.JSONObject()
     private var lastBtnCount  = -1
-    private var lastKnobCount = -1
     private var lastSendAt    = 0L
     private val connectionManager = ConnectionManager()
     private val btManager by lazy { BluetoothManager(this) }
@@ -331,25 +299,12 @@ class MainActivity : Activity(), SensorEventListener {
     private var nextButtonId = 1
     private var editMode = false
 
-    // --- customizable rotary knobs (ABS / TC / brake balance / ...) ---
-    private lateinit var knobLayoutStore: KnobLayoutStore
-    private val customKnobs = mutableListOf<RotaryKnobView>()
-    private var nextAxisId = 1
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         layoutStore = LayoutStore(this)
-        knobLayoutStore = KnobLayoutStore(this)
-        // Restore saved steering settings
-        val prefs = getSharedPreferences("phonewheel_settings", Context.MODE_PRIVATE)
-        maxSteerAngle = prefs.getFloat("maxSteerAngle", 45f)
-        lpAlpha    = prefs.getFloat("lpAlpha", 0.25f)
-        steerGamma  = prefs.getFloat("steerGamma", 1.5f)
-        linearZone  = prefs.getFloat("linearZone", 0.83f)
-        sharpZone   = prefs.getFloat("sharpZone",  0.94f)
         setupSensors()
         buildUi()
         setupConnectionCallbacks()
@@ -359,9 +314,6 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
-        firstSample = true  // reset two-pass filter on resume
-        calibrating = false
-        calibSamples.clear()
         rotSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
     }
 
@@ -384,86 +336,18 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR &&
-            event.sensor.type != Sensor.TYPE_GAME_ROTATION_VECTOR) return
-
-        SensorManager.getRotationMatrixFromVector(rotMatrix, event.values)
-
-        // Remap axes for landscape (horizontal) hold, screen toward user.
-        SensorManager.remapCoordinateSystem(
-            rotMatrix,
-            SensorManager.AXIS_Y,
-            SensorManager.AXIS_MINUS_X,
-            remappedMatrix
-        )
-        SensorManager.getOrientation(remappedMatrix, orientation)
-
-        // orientation[2] = roll in remapped frame = left/right tilt in landscape hold.
-        val rawRoll = -orientation[2] * 180f / PI.toFloat()
-
-        // Two-pass low-pass filter.
-        if (firstSample) {
-            firstSample = false
-            smooth1 = rawRoll
-            smooth2 = rawRoll
-        } else {
-            smooth1 = smooth1 + lpAlpha * (rawRoll - smooth1)
-            smooth2 = smooth2 + lpAlpha * (smooth1 - smooth2)
+        if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR ||
+            event.sensor.type == Sensor.TYPE_GAME_ROTATION_VECTOR) {
+            SensorManager.getRotationMatrixFromVector(rotMatrix, event.values)
+            SensorManager.getOrientation(rotMatrix, orientation)
+            // Приложение всегда держат в landscape (см. манифест), поэтому
+            // естественные portrait-оси повёрнуты на 90°: наклон влево-вправо
+            // в landscape-хвате соответствует оси pitch (X), а не roll (Y) —
+            // roll в этом хвате реагирует на наклон вперёд-назад, отсюда и баг.
+            rollDeg = -orientation[1] * 180f / PI.toFloat()
+            val raw = (rollDeg - centerRoll) / maxSteerAngle
+            steer = raw.coerceIn(-1f, 1f)
         }
-        rollDeg = smooth2
-
-        // Calibration: collect samples after "Центр" is pressed.
-        if (calibrating) {
-            calibSamples.add(rawRoll)  // collect raw for averaging
-            if (calibSamples.size >= CALIB_FRAMES) {
-                centerRoll = calibSamples.average().toFloat()
-                calibSamples.clear()
-                calibrating = false
-                smooth1 = centerRoll; smooth2 = centerRoll  // snap filter to new center
-            }
-        }
-
-        val raw = (rollDeg - centerRoll) / maxSteerAngle
-        val clamped = raw.coerceIn(-1f, 1f)
-        val absRaw = abs(clamped)
-
-        // Progressive steering curve:
-        //
-        //  Zone 1 — 0..linearZone  (0..75°): linear 1:1, precise control
-        //  Zone 2 — linearZone..sharpZone (75..85°): boosted 2x,
-        //           each extra degree of phone = 2 degrees of wheel
-        //  Zone 3 — sharpZone..1.0 (85..90°): auto-complete to full lock,
-        //           smoothly snaps to 1.0 so the last few degrees aren't
-        //           awkward to physically reach
-        //
-        // All thresholds are expressed as fractions of maxSteerAngle so
-        // they scale correctly when the user changes the angle setting.
-        // linearZone and sharpZone are instance fields, configurable from settings.
-
-        val curved = when {
-            absRaw < 0.015f   -> 0f          // dead zone
-            absRaw < linearZone -> {
-                // Zone 1: linear
-                clamped
-            }
-            absRaw < sharpZone -> {
-                // Zone 2: linear up to linearZone output, then 2x boost
-                val base     = linearZone               // output at zone boundary
-                val extra    = (absRaw - linearZone) * 2f  // 2x multiplier
-                val out      = (base + extra).coerceIn(0f, 1f)
-                Math.signum(clamped) * out
-            }
-            else -> {
-                // Zone 3: auto-complete — smooth ease-in to 1.0
-                // t goes 0..1 within this zone
-                val t = (absRaw - sharpZone) / (1f - sharpZone)
-                val zoneStart = (linearZone + (sharpZone - linearZone) * 2f)
-                    .coerceIn(0f, 1f)
-                val out = zoneStart + (1f - zoneStart) * t
-                Math.signum(clamped) * out.coerceIn(0f, 1f)
-            }
-        }
-        steer = curved
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -578,33 +462,29 @@ class MainActivity : Activity(), SensorEventListener {
             setTextColor(Color.WHITE)
             background = roundRect(Color.parseColor("#1e2536"), dp(10).toFloat())
             setOnClickListener {
-                // Start calibration: collect CALIB_FRAMES sensor readings and
-                // use their average as the new center. Shows "Калибровка..." for
-                // ~300ms then confirms. This eliminates the 1-2° drift that comes
-                // from using a single instantaneous sample as the zero point.
-                if (!calibrating) {
-                    calibSamples.clear()
-                    calibrating = true
-                    text = "⏳"
-                    isEnabled = false
-                    handler.postDelayed({
-                        text = "Центр"
-                        isEnabled = true
-                        Toast.makeText(context, "Центр установлен", Toast.LENGTH_SHORT).show()
-                    }, (CALIB_FRAMES * 12L) + 100L)
-                }
+                centerRoll = rollDeg
+                Toast.makeText(context, "Центр установлен", Toast.LENGTH_SHORT).show()
             }
         }
-        val settingsBtn = Button(this).apply {
-            text = "⚙ Угол"
-            setTextColor(Color.parseColor("#6b7394"))
-            background = roundRect(Color.parseColor("#0d1117"), dp(10).toFloat())
-            setOnClickListener { showSteeringSettings() }
-        }
-        btnRow.addView(connectBtn,  lp(0, dp(44), 1f, endMargin = dp(4)))
-        btnRow.addView(centerBtn,   lp(0, dp(44), 1f, endMargin = dp(4)))
-        btnRow.addView(settingsBtn, lp(0, dp(44), 1f))
+        btnRow.addView(connectBtn, lp(0, dp(44), 1f, endMargin = dp(4)))
+        btnRow.addView(centerBtn,  lp(0, dp(44), 1f))
         center.addView(btnRow, lp(MATCH, dp(44)).also { it.setMargins(0, dp(4), 0, 0) })
+
+        // angle label + seekbar
+        val angleLabel = tv("Угол: 45°", 11f, Color.parseColor("#6b7394"))
+        center.addView(angleLabel, lp(MATCH, dp(22)).also { it.setMargins(0, dp(6), 0, 0) })
+        val angleSeek = SeekBar(this).apply {
+            max = 80; progress = 35
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, u: Boolean) {
+                    maxSteerAngle = (10 + p).toFloat()
+                    angleLabel.text = "Угол: ${maxSteerAngle.toInt()}°"
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        center.addView(angleSeek, lp(MATCH, dp(32)))
 
         // wheel
         wheelView = WheelView(this)
@@ -642,14 +522,8 @@ class MainActivity : Activity(), SensorEventListener {
                 nextButtonId = savedNextId
                 rebuildButtons(layouts)
             }
-            val loadedKnobs = knobLayoutStore.load()
-            if (loadedKnobs != null) {
-                val (knobLayouts, savedNextAxisId) = loadedKnobs
-                nextAxisId = savedNextAxisId
-                rebuildKnobs(knobLayouts)
-            }
             // No saved layout yet -> start with an empty overlay; user adds
-            // buttons/knobs with the toolbar buttons.
+            // buttons with the "+" toolbar button.
         }
     }
 
@@ -675,41 +549,15 @@ class MainActivity : Activity(), SensorEventListener {
             setPadding(dp(8), dp(6), dp(8), dp(6))
             visibility = View.GONE
         }
-        // Row 1: add buttons
         val addBtn = Button(this).apply {
-            text = "+ Кнопку"
+            text = "+ Добавить кнопку"
             setTextColor(Color.WHITE)
             background = roundRect(Color.parseColor("#5b4fe8"), dp(10).toFloat())
             setOnClickListener { addNewButton() }
         }
         editToolbar.addView(addBtn, lp(0, dp(34), 1f, endMargin = dp(4)))
-
-        val removeBtn = Button(this).apply {
-            text = "− Кнопку"
-            setTextColor(Color.parseColor("#ff6060"))
-            background = roundRect(Color.parseColor("#2a1020"), dp(10).toFloat())
-            setOnClickListener { removeLastButton() }
-        }
-        editToolbar.addView(removeBtn, lp(0, dp(34), 1f, endMargin = dp(4)))
-
-        val addKnobBtn = Button(this).apply {
-            text = "+ Колёсико"
-            setTextColor(Color.WHITE)
-            background = roundRect(Color.parseColor("#228866"), dp(10).toFloat())
-            setOnClickListener { addNewKnob() }
-        }
-        editToolbar.addView(addKnobBtn, lp(0, dp(34), 1f, endMargin = dp(4)))
-
-        val removeKnobBtn = Button(this).apply {
-            text = "− Колёсико"
-            setTextColor(Color.parseColor("#ff6060"))
-            background = roundRect(Color.parseColor("#1a2a1a"), dp(10).toFloat())
-            setOnClickListener { removeLastKnob() }
-        }
-        editToolbar.addView(removeKnobBtn, lp(0, dp(34), 1f, endMargin = dp(4)))
-
-        val hintLbl = tv("тяни • уголок=размер • тап=переим.", 8f, Color.parseColor("#6b7394"))
-        editToolbar.addView(hintLbl, lp(0, dp(34), 0.8f, endMargin = dp(4)))
+        val hintLbl = tv("тяни • тяни уголок чтобы изменить размер • тап чтобы переименовать • держи чтобы удалить", 9f, Color.parseColor("#6b7394"))
+        editToolbar.addView(hintLbl, lp(0, dp(34), 1.4f, endMargin = dp(4)))
         val doneBtn = Button(this).apply {
             text = "Готово"
             setTextColor(Color.parseColor("#22dc82"))
@@ -727,7 +575,6 @@ class MainActivity : Activity(), SensorEventListener {
     private fun setEditMode(on: Boolean) {
         editMode = on
         customButtons.forEach { it.editMode = on }
-        customKnobs.forEach { it.editMode = on }
         editToolbar.visibility = if (on) View.VISIBLE else View.GONE
     }
 
@@ -814,357 +661,6 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun persistCurrentLayout() {
         layoutStore.save(customButtons.map { it.toLayout() }, nextButtonId)
-    }
-
-    /** Removes the last added button — mirrors the long-press delete but
-     *  accessible from the toolbar without needing to long-press on a small
-     *  target. Shows a confirmation with the button's name so nothing gets
-     *  deleted by accident. */
-    private fun removeLastButton() {
-        val last = customButtons.lastOrNull() ?: run {
-            Toast.makeText(this, "Нет кнопок для удаления", Toast.LENGTH_SHORT).show()
-            return
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Удалить кнопку «${last.labelText}»?")
-            .setPositiveButton("Удалить") { _, _ ->
-                buttonOverlay.removeView(last)
-                customButtons.remove(last)
-                persistCurrentLayout()
-            }
-            .setNegativeButton("Отмена", null)
-            .show()
-    }
-
-    /** Removes the last added knob — same pattern as removeLastButton. */
-    private fun removeLastKnob() {
-        val last = customKnobs.lastOrNull() ?: run {
-            Toast.makeText(this, "Нет колёсиков для удаления", Toast.LENGTH_SHORT).show()
-            return
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Удалить колёсико «${last.labelText}»?")
-            .setPositiveButton("Удалить") { _, _ ->
-                buttonOverlay.removeView(last)
-                customKnobs.remove(last)
-                persistCurrentKnobLayout()
-            }
-            .setNegativeButton("Отмена", null)
-            .show()
-    }
-
-    // ─── Rotary knobs (ABS / TC / brake balance / ...) ─────────────────────
-    // Mirrors the button management methods above exactly — same id scheme,
-    // same edit-mode interactions, same persistence pattern.
-
-    private fun rebuildKnobs(layouts: List<KnobLayout>) {
-        customKnobs.forEach { buttonOverlay.removeView(it) }
-        customKnobs.clear()
-        val pw = buttonOverlay.width.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels.toFloat()
-        val ph = buttonOverlay.height.toFloat().takeIf { it > 0 } ?: resources.displayMetrics.heightPixels.toFloat()
-        for (kl in layouts) {
-            val view = RotaryKnobView(this, kl.id, kl.label, kl.value,
-                onValueChanged = { persistCurrentKnobLayout() },
-                onMoved = { persistCurrentKnobLayout() },
-                onLongPressRemove = { v -> confirmRemoveKnob(v) },
-                onTapRename = { v -> renameKnobDialog(v) })
-            view.editMode = editMode
-            val size = (kl.sizeFrac * pw).toInt()
-            val params = FrameLayout.LayoutParams(size, size).apply {
-                leftMargin = (kl.xFrac * pw).toInt()
-                topMargin  = (kl.yFrac * ph).toInt()
-            }
-            buttonOverlay.addView(view, params)
-            customKnobs.add(view)
-        }
-    }
-
-    private fun confirmRemoveKnob(view: RotaryKnobView) {
-        AlertDialog.Builder(this)
-            .setTitle("Удалить колёсико «${view.labelText}»?")
-            .setPositiveButton("Удалить") { _, _ ->
-                buttonOverlay.removeView(view)
-                customKnobs.remove(view)
-                persistCurrentKnobLayout()
-            }
-            .setNegativeButton("Отмена", null)
-            .show()
-    }
-
-    private fun renameKnobDialog(view: RotaryKnobView) {
-        val input = EditText(this).apply {
-            setText(view.labelText)
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.parseColor("#6b7394"))
-            hint = "Название колёсика (например ABS)"
-            setSingleLine(true)
-            setSelection(text.length)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Название колёсика (${view.axisId})")
-            .setView(input)
-            .setPositiveButton("Сохранить") { _, _ ->
-                val newLabel = input.text.toString().trim()
-                if (newLabel.isNotEmpty()) {
-                    view.labelText = newLabel
-                    view.invalidate()
-                    persistCurrentKnobLayout()
-                }
-            }
-            .setNegativeButton("Отмена", null)
-            .show()
-    }
-
-    /** Adds a new free-form rotary knob in the center of the screen with a
-     *  fresh, never-reused id ("axis_N"). Same auto-naming/no-limit pattern
-     *  as addNewButton(). */
-    private fun addNewKnob() {
-        val pw = buttonOverlay.width.toFloat()
-        val ph = buttonOverlay.height.toFloat()
-        val id = "axis_${nextAxisId}"
-        val label = "AXIS $nextAxisId"
-        nextAxisId++
-
-        val stagger = (customKnobs.size % 5) * dp(16)
-        val view = RotaryKnobView(this, id, label, 0.5f,
-            onValueChanged = { persistCurrentKnobLayout() },
-            onMoved = { persistCurrentKnobLayout() },
-            onLongPressRemove = { v -> confirmRemoveKnob(v) },
-            onTapRename = { v -> renameKnobDialog(v) })
-        view.editMode = editMode
-        val size = dp(96)
-        val params = FrameLayout.LayoutParams(size, size).apply {
-            leftMargin = ((pw - size) / 2f).toInt() + stagger
-            topMargin  = ((ph - size) / 2f).toInt() + stagger
-        }
-        buttonOverlay.addView(view, params)
-        customKnobs.add(view)
-        persistCurrentKnobLayout()
-    }
-
-    private fun persistCurrentKnobLayout() {
-        knobLayoutStore.save(customKnobs.map { it.toLayout() }, nextAxisId)
-    }
-
-    /** Small settings dialog for the steering angle — keeps the main screen
-     *  clean. Opened via the "⚙ Угол" button. Persists the value to
-     *  SharedPreferences so it survives app restarts. */
-    private fun showSteeringSettings() {
-        val prefs = getSharedPreferences("phonewheel_settings", Context.MODE_PRIVATE)
-
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(16), dp(24), dp(8))
-        }
-
-        // ── Angle slider ──
-        val angleLabel = TextView(this).apply {
-            text = "Угол поворота: ${maxSteerAngle.toInt()}°"
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            gravity = Gravity.CENTER
-        }
-        layout.addView(angleLabel)
-
-        val angleSeek = SeekBar(this).apply {
-            max = 80
-            progress = (maxSteerAngle - 10f).toInt().coerceIn(0, 80)
-            setPadding(0, dp(8), 0, dp(4))
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
-                    maxSteerAngle = (10 + p).toFloat()
-                    angleLabel.text = "Угол поворота: ${maxSteerAngle.toInt()}°"
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {
-                    prefs.edit().putFloat("maxSteerAngle", maxSteerAngle).apply()
-                }
-            })
-        }
-        layout.addView(angleSeek)
-
-        layout.addView(TextView(this).apply {
-            text = "Меньший угол — точнее, больший — реалистичнее."
-            setTextColor(Color.parseColor("#6b7394"))
-            textSize = 11f
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dp(16))
-        })
-
-        // ── Smoothness slider ──
-        // lpAlpha 0.05..0.40 mapped to SeekBar 0..35 (step 0.01)
-        // Low alpha = very smooth but tiny extra lag. High alpha = responsive
-        // but may jitter. Default 0.10 is a good balance.
-        fun alphaToProgress(a: Float) = ((a - 0.05f) * 100f).toInt().coerceIn(0, 35)
-        fun progressToAlpha(p: Int) = (0.05f + p * 0.01f).coerceIn(0.05f, 0.40f)
-
-        fun smoothLabel(a: Float) = when {
-            a <= 0.08f -> "Сглаживание: максимальное (очень плавно)"
-            a <= 0.15f -> "Сглаживание: высокое (рекомендуется)"
-            a <= 0.25f -> "Сглаживание: среднее"
-            else       -> "Сглаживание: минимальное (быстро, но может дёргаться)"
-        }
-
-        val smoothLabel = TextView(this).apply {
-            text = smoothLabel(lpAlpha)
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            gravity = Gravity.CENTER
-        }
-        layout.addView(smoothLabel)
-
-        val smoothSeek = SeekBar(this).apply {
-            max = 35
-            progress = alphaToProgress(lpAlpha)
-            setPadding(0, dp(8), 0, dp(4))
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
-                    lpAlpha = progressToAlpha(p)
-                    smoothLabel.text = smoothLabel(lpAlpha)
-                    // Reset filter so new alpha takes effect immediately
-                    firstSample = true
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {
-                    prefs.edit().putFloat("lpAlpha", lpAlpha).apply()
-                }
-            })
-        }
-        layout.addView(smoothSeek)
-
-        layout.addView(TextView(this).apply {
-            text = "Если руль дёргается — увеличь сглаживание.\nЕсли запаздывает — уменьши."
-            setTextColor(Color.parseColor("#6b7394"))
-            textSize = 11f
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dp(8))
-        })
-
-        // ── Gamma (response curve) slider ──
-        // Range 1.0..3.0, step 0.1, mapped to SeekBar 0..20
-        fun gammaToProgress(g: Float) = ((g - 1.0f) * 10f).toInt().coerceIn(0, 20)
-        fun progressToGamma(p: Int) = (1.0f + p * 0.1f).coerceIn(1.0f, 3.0f)
-
-        fun gammaLabel(g: Float) = when {
-            g <= 1.0f -> "Кривая: линейная (1.0) — одинаково по всему диапазону"
-            g <= 1.4f -> "Кривая: лёгкая (%.1f) — чуть мягче в центре".format(g)
-            g <= 1.8f -> "Кривая: средняя (%.1f) — рекомендуется ✓".format(g)
-            g <= 2.4f -> "Кривая: агрессивная (%.1f) — мягкий центр, резкие края".format(g)
-            else      -> "Кривая: очень агрессивная (%.1f) — для больших углов".format(g)
-        }
-
-        val gammaLbl = TextView(this).apply {
-            text = gammaLabel(steerGamma)
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            gravity = Gravity.CENTER
-            setPadding(0, dp(4), 0, 0)
-        }
-        layout.addView(gammaLbl)
-
-        val gammaSeek = SeekBar(this).apply {
-            max = 20
-            progress = gammaToProgress(steerGamma)
-            setPadding(0, dp(8), 0, dp(4))
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
-                    steerGamma = progressToGamma(p)
-                    gammaLbl.text = gammaLabel(steerGamma)
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {
-                    prefs.edit().putFloat("steerGamma", steerGamma).apply()
-                }
-            })
-        }
-        layout.addView(gammaSeek)
-
-        layout.addView(TextView(this).apply {
-            text = "1.0 = линейно  •  1.5 = рекомендуется  •  2.0+ = точность в центре"
-            setTextColor(Color.parseColor("#6b7394"))
-            textSize = 10f
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dp(8))
-        })
-
-        // ── Progressive curve zones ──
-        // linearZone: 0.60..0.95 (fraction of maxSteerAngle where boost starts)
-        // sharpZone:  always = linearZone + 0.05..0.15 (where auto-complete starts)
-        fun zoneToProgress(z: Float) = ((z - 0.60f) * 100f).toInt().coerceIn(0, 35)
-        fun progressToZone(p: Int)   = (0.60f + p * 0.01f).coerceIn(0.60f, 0.95f)
-        fun angleForZone(z: Float)   = (z * maxSteerAngle).toInt()
-
-        val linearLbl = TextView(this).apply {
-            text = "Начало резкости: ${angleForZone(linearZone)}° (из ${maxSteerAngle.toInt()}°)"
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            gravity = Gravity.CENTER
-            setPadding(0, dp(8), 0, 0)
-        }
-        layout.addView(linearLbl)
-
-        val linearSeek = SeekBar(this).apply {
-            max = 35
-            progress = zoneToProgress(linearZone)
-            setPadding(0, dp(6), 0, dp(4))
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
-                    linearZone = progressToZone(p)
-                    // Keep sharpZone at least 0.05 above linearZone
-                    if (sharpZone < linearZone + 0.05f) sharpZone = (linearZone + 0.08f).coerceIn(0f, 0.98f)
-                    linearLbl.text = "Начало резкости: ${angleForZone(linearZone)}° (из ${maxSteerAngle.toInt()}°)"
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-        }
-        layout.addView(linearSeek)
-
-        val sharpLbl = TextView(this).apply {
-            text = "Начало автодокрутки: ${angleForZone(sharpZone)}°"
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            gravity = Gravity.CENTER
-            setPadding(0, dp(4), 0, 0)
-        }
-        layout.addView(sharpLbl)
-
-        val sharpSeek = SeekBar(this).apply {
-            max = 35
-            progress = zoneToProgress(sharpZone)
-            setPadding(0, dp(6), 0, dp(4))
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
-                    sharpZone = progressToZone(p).coerceAtLeast(linearZone + 0.05f)
-                    sharpLbl.text = "Начало автодокрутки: ${angleForZone(sharpZone)}°"
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-        }
-        layout.addView(sharpSeek)
-
-        layout.addView(TextView(this).apply {
-            text = "0°→резкость: точное управление  •  резкость→автодокрутка: ускорение  •  остаток: сам до упора"
-            setTextColor(Color.parseColor("#6b7394"))
-            textSize = 10f
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dp(8))
-        })
-
-        AlertDialog.Builder(this)
-            .setTitle("Настройки руля")
-            .setView(layout)
-            .setPositiveButton("Закрыть") { _, _ ->
-                prefs.edit()
-                    .putFloat("maxSteerAngle", maxSteerAngle)
-                    .putFloat("lpAlpha", lpAlpha)
-                    .putFloat("steerGamma", steerGamma)
-                    .putFloat("linearZone", linearZone)
-                    .putFloat("sharpZone", sharpZone)
-                    .apply()
-            }
-            .show()
     }
 
     private fun setConnMode(kind: TransportKind, usbBtn: Button, wifiBtn: Button, btBtn: Button) {
@@ -1375,29 +871,15 @@ class MainActivity : Activity(), SensorEventListener {
                             labelsJson.put(cb.buttonId, cb.labelText)
                         }
 
-                        // Same reuse pattern for rotary-knob axes.
-                        val knobCount = customKnobs.size
-                        if (knobCount != lastKnobCount) {
-                            axesJson.keys().forEach { axesJson.remove(it) }
-                            axisLabelsJson.keys().forEach { axisLabelsJson.remove(it) }
-                            lastKnobCount = knobCount
-                        }
-                        for (kn in customKnobs) {
-                            axesJson.put(kn.axisId, kn.value.toDouble())
-                            axisLabelsJson.put(kn.axisId, kn.labelText)
-                        }
-
                         // Reuse stateJson — update fields in place.
                         stateJson.put("type",        "state")
                         stateJson.put("seq",         seq++)
                         stateJson.put("ts",          System.currentTimeMillis())
                         stateJson.put("steer",       steer.toDouble())
-                        stateJson.put("throttle",    gasView.value.toDouble() / 100.0)
-                        stateJson.put("brake",       brakeView.value.toDouble() / 100.0)
+                        stateJson.put("throttle",    0.5 + gasView.value.toDouble() / 200.0)
+                        stateJson.put("brake",       0.5 + brakeView.value.toDouble() / 200.0)
                         stateJson.put("buttons",     buttonsJson)
                         stateJson.put("buttonLabels",labelsJson)
-                        stateJson.put("axes",        axesJson)
-                        stateJson.put("axisLabels",  axisLabelsJson)
 
                         connectionManager.send(stateJson.toString())
                         lastSendAt = now
@@ -1408,7 +890,6 @@ class MainActivity : Activity(), SensorEventListener {
                         seq = 0L
                         lastSendAt = 0L
                         lastBtnCount = -1
-                        lastKnobCount = -1
                     }
                 }
                 sendHandler.postDelayed(this, SEND_INTERVAL_MS)
