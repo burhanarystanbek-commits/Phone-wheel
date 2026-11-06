@@ -26,19 +26,35 @@ public class WsServer
     public bool Start()
     {
         _cts = new CancellationTokenSource();
-        _listener = new HttpListener();
-        _listener.Prefixes.Add($"http://+:{Port}/ws/");
-        try
+        // All interfaces (needed for Wi-Fi). Requires admin or a URL ACL.
+        if (TryStart($"http://+:{Port}/ws/"))
         {
-            _listener.Start();
+            LocalOnly = false;
         }
-        catch (HttpListenerException)
+        // Fallback: loopback only — USB via adb reverse still works without admin.
+        else if (TryStart($"http://localhost:{Port}/ws/") || TryStart($"http://127.0.0.1:{Port}/ws/"))
         {
-            _listener = null;
+            LocalOnly = true;
+            Log?.Invoke("Wi-Fi недоступен: нет прав на порт. Нажми «Настроить доступ» (один раз, нужен UAC). USB работает.");
+        }
+        else
+        {
             return false;
         }
         _ = AcceptLoop(_cts.Token);
         return true;
+    }
+
+    /// <summary>True when only 127.0.0.1 is bound (no URL ACL yet) — Wi-Fi
+    /// phones can't reach us in that state.</summary>
+    public bool LocalOnly { get; private set; }
+
+    private bool TryStart(string prefix)
+    {
+        var l = new HttpListener();
+        l.Prefixes.Add(prefix);
+        try { l.Start(); _listener = l; return true; }
+        catch (HttpListenerException) { try { l.Close(); } catch { } return false; }
     }
 
     public void Stop()
@@ -56,15 +72,23 @@ public class WsServer
     {
         try
         {
-            var psi = new System.Diagnostics.ProcessStartInfo("netsh",
-                $"http add urlacl url=http://+:{Port}/ws/ user=Everyone")
+            // "user=Everyone" fails on non-English Windows (it's "Все" in
+            // Russian) — use the language-neutral SDDL for Everyone instead.
+            // Also open the port in Windows Firewall, otherwise the phone's
+            // Wi-Fi connection is silently dropped.
+            var cmd =
+                $"/c netsh http delete urlacl url=http://+:{Port}/ws/ & " +
+                $"netsh http add urlacl url=http://+:{Port}/ws/ sddl=D:(A;;GX;;;WD) & " +
+                $"netsh advfirewall firewall delete rule name=PhoneWheel & " +
+                $"netsh advfirewall firewall add rule name=PhoneWheel dir=in action=allow protocol=TCP localport={Port} profile=any";
+            var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe", cmd)
             {
                 UseShellExecute = true,
                 Verb = "runas",
             };
             var p = System.Diagnostics.Process.Start(psi);
             p?.WaitForExit();
-            return p != null && p.ExitCode == 0;
+            return p != null;
         }
         catch
         {
@@ -118,11 +142,17 @@ public class WsServer
         {
             while (socket.State == WebSocketState.Open && !token.IsCancellationRequested)
             {
-                var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), token);
+                var count = 0;
+                WebSocketReceiveResult result;
+                do
+                {
+                    result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer, count, buffer.Length - count), token);
+                    count += result.Count;
+                } while (!result.EndOfMessage && count < buffer.Length);
                 if (result.MessageType == WebSocketMessageType.Close) break;
-                if (result.MessageType != WebSocketMessageType.Text) continue;
+                if (result.MessageType != WebSocketMessageType.Text || !result.EndOfMessage) continue;
 
-                var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                var json = Encoding.UTF8.GetString(buffer, 0, count);
                 try
                 {
                     var state = JsonSerializer.Deserialize<WheelState>(json);

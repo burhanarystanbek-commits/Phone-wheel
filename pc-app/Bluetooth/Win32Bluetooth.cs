@@ -60,7 +60,12 @@ internal static class Win32Bluetooth
     }
 
     private const int NS_BTH         = 16;
-    private const int RNRSERVICE_REGISTER = 1;
+    // WSAESETSERVICEOP: RNRSERVICE_REGISTER = 0, RNRSERVICE_DEREGISTER = 1.
+    // (The old code passed 1, i.e. it *deregistered* — the SDP record never
+    // existed, so Android's createRfcommSocketToServiceRecord could not
+    // find the service and every connect failed.)
+    private const int RNRSERVICE_REGISTER   = 0;
+    private const int RNRSERVICE_DEREGISTER = 1;
 
     [DllImport("ws2_32.dll", SetLastError = true)]
     private static extern int bind(IntPtr s, ref SOCKADDR_BTH addr, int addrLen);
@@ -94,18 +99,11 @@ internal static class Win32Bluetooth
     {
         var handle = socket.Handle;
 
-        // 1. Bind to any local radio, any channel (BT_PORT_ANY = 0).
-        var bindAddr = new SOCKADDR_BTH
-        {
-            addressFamily  = AF_BTH,
-            btAddr         = 0,
-            serviceClassId = serviceUuid,
-            port           = BT_PORT_ANY,
-        };
-        var bindLen = Marshal.SizeOf<SOCKADDR_BTH>(); // 30 bytes
-        var rc = bind(handle, ref bindAddr, bindLen);
-        if (rc != 0)
-            throw new SocketException(Marshal.GetLastWin32Error());
+        // 1. Bind through the managed API with a custom EndPoint. A raw
+        //    native bind() leaves .NET's Socket thinking it is unbound, and
+        //    then Socket.AcceptAsync throws "You must call Bind first" —
+        //    the server never accepted a single Bluetooth client.
+        socket.Bind(new BluetoothEndPoint(0, Guid.Empty, BT_PORT_ANY));
 
         // 2. Read back the channel Windows assigned.
         var localAddr = new SOCKADDR_BTH();
@@ -115,12 +113,23 @@ internal static class Win32Bluetooth
 
         // 3. Register SDP record via WSASetService so Android's SDP client
         //    can discover which channel our service is on.
-        RegisterSdp(handle, serviceUuid, serviceName, localAddr);
+        RegisterSdp(serviceUuid, serviceName, localAddr, RNRSERVICE_REGISTER);
+        _registered = (serviceUuid, serviceName, localAddr);
     }
 
-    private static unsafe void RegisterSdp(IntPtr socketHandle, Guid serviceUuid,
-                                            string serviceName,
-                                            SOCKADDR_BTH localAddr)
+    private static (Guid uuid, string name, SOCKADDR_BTH addr)? _registered;
+
+    /// <summary>Removes the SDP record registered by BindAndRegisterSdp so a
+    /// restart doesn't leave stale records pointing at an old channel.</summary>
+    public static void UnregisterSdp()
+    {
+        if (_registered is not { } r) return;
+        _registered = null;
+        try { RegisterSdp(r.uuid, r.name, r.addr, RNRSERVICE_DEREGISTER); } catch { }
+    }
+
+    private static unsafe void RegisterSdp(Guid serviceUuid, string serviceName,
+                                            SOCKADDR_BTH localAddr, int op)
     {
         // Pin the strings and structs we need to pass as pointers.
         fixed (char* pName = serviceName)
@@ -155,7 +164,7 @@ internal static class Win32Bluetooth
                         lpcsaBuffer          = (IntPtr)pCsAddr,
                     };
 
-                    var ret = WSASetService(ref qs, RNRSERVICE_REGISTER, 0);
+                    var ret = WSASetService(ref qs, op, 0);
                     if (ret != 0)
                     {
                         var err = Marshal.GetLastWin32Error();
@@ -189,4 +198,43 @@ internal static class Win32Bluetooth
         finally { Marshal.FreeHGlobal(ptr); }
         return buf;
     }
+}
+
+/// <summary>Managed EndPoint for AF_BTH (SOCKADDR_BTH, 30 bytes) so that
+/// System.Net.Sockets can Bind/Accept Bluetooth RFCOMM sockets.</summary>
+internal sealed class BluetoothEndPoint : System.Net.EndPoint
+{
+    private const int Size = 30;
+    public ulong Address { get; }
+    public Guid Service { get; }
+    public uint Port { get; }
+
+    public BluetoothEndPoint(ulong address, Guid service, uint port)
+    { Address = address; Service = service; Port = port; }
+
+    public override AddressFamily AddressFamily => (AddressFamily)Win32Bluetooth.AF_BTH;
+
+    public override System.Net.SocketAddress Serialize()
+    {
+        var sa = new System.Net.SocketAddress(AddressFamily, Size);
+        var addr = BitConverter.GetBytes(Address);
+        for (var i = 0; i < 8; i++) sa[2 + i] = addr[i];
+        var g = Service.ToByteArray();
+        for (var i = 0; i < 16; i++) sa[10 + i] = g[i];
+        var p = BitConverter.GetBytes(Port);
+        for (var i = 0; i < 4; i++) sa[26 + i] = p[i];
+        return sa;
+    }
+
+    public override System.Net.EndPoint Create(System.Net.SocketAddress sa)
+    {
+        var buf = new byte[Size];
+        for (var i = 0; i < Math.Min(Size, sa.Size); i++) buf[i] = sa[i];
+        return new BluetoothEndPoint(
+            BitConverter.ToUInt64(buf, 2),
+            new Guid(buf.AsSpan(10, 16)),
+            BitConverter.ToUInt32(buf, 26));
+    }
+
+    public override string ToString() => $"BT {Address:X12} ch{Port}";
 }

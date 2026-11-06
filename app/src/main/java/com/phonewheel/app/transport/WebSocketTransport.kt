@@ -19,7 +19,11 @@ class WebSocketTransport(
     private val helloPayload: () -> String,
 ) : ITransport {
 
-    private val client = OkHttpClient.Builder().retryOnConnectionFailure(true).build()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(4, java.util.concurrent.TimeUnit.SECONDS)
+        .pingInterval(3, java.util.concurrent.TimeUnit.SECONDS) // detects dead Wi-Fi links
+        .retryOnConnectionFailure(true)
+        .build()
     private var socket: WebSocket? = null
 
     @Volatile
@@ -54,7 +58,11 @@ class WebSocketTransport(
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 peerDescription = null
                 setState(ConnectionState.ERROR)
-                onLog?.invoke("Ошибка: ${t.message ?: "?"}", "err")
+                onLog?.invoke(t.message ?: t.javaClass.simpleName, "err")
+            }
+
+            override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                ws.close(1000, null)
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {

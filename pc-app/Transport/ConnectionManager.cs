@@ -19,6 +19,7 @@ public class ConnectionManager : IDisposable
     public ConnectionState State => _active?.State ?? ConnectionState.Disconnected;
     public string? PeerDescription => _active?.PeerDescription;
     public int PacketRateHz => _packetRate;
+    public bool WsLocalOnly => _active is WebSocketTransport w && w.LocalOnly;
     public int LatencyMs => _latencyMs;
 
     public TimeSpan? ConnectedDuration =>

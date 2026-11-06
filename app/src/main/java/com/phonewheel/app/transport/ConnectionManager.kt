@@ -28,7 +28,14 @@ class ConnectionManager {
      *  the URL/hello-payload it already knows how to build, keeping this
      *  class free of any connection-string logic). */
     fun switchTo(newKind: TransportKind, factory: (TransportKind) -> ITransport) {
-        active?.disconnect()
+        // Silence the old transport first, otherwise its DISCONNECTED event
+        // would arrive after the new one started and look like a drop.
+        active?.let { old ->
+            old.setOnStateChanged { }
+            old.setOnLog { _, _ -> }
+            old.disconnect()
+        }
+        active = null
         val t = factory(newKind)
         t.setOnStateChanged { s -> onStateChanged?.invoke(s) }
         t.setOnLog { msg, lvl -> onLog?.invoke(msg, lvl) }

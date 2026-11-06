@@ -2,11 +2,14 @@ name: Build PC App (exe)
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, 'ccr-*' ]
     paths:
       - 'pc-app/**'
       - '.github/workflows/build-pc-app.yml'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -30,6 +33,7 @@ jobs:
           -c Release -r win-x64 --self-contained true
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:Version=2.0.${{ github.run_number }}
           -o publish
 
       - uses: actions/upload-artifact@v4
@@ -37,3 +41,12 @@ jobs:
           name: PhoneWheelPC-win64
           path: publish/PhoneWheelPC.exe
           retention-days: 30
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pc-v2.0.${{ github.run_number }}
+          name: PhoneWheel PC 2.0.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          files: publish/PhoneWheelPC.exe
+          body: "Программа для ПК. При запуске сама проверяет и ставит новую версию."

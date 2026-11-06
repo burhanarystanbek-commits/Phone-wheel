@@ -191,9 +191,15 @@ class BluetoothManager(private val context: Context) {
             try {
                 stopDiscoveryQuietly()
                 val remote: BluetoothDevice = adapter.getRemoteDevice(device.address)
-                val sock = remote.createRfcommSocketToServiceRecord(SERVICE_UUID)
-                socket = sock
-                sock.connect() // blocks until connected or throws
+                // Secure first; Windows sometimes only accepts the insecure
+                // variant for an RFCOMM service registered from user mode.
+                val sock = try {
+                    remote.createRfcommSocketToServiceRecord(SERVICE_UUID).also { socket = it; it.connect() }
+                } catch (first: IOException) {
+                    closeSocketQuietly()
+                    if (Thread.currentThread().isInterrupted) throw first
+                    remote.createInsecureRfcommSocketToServiceRecord(SERVICE_UUID).also { socket = it; it.connect() }
+                }
 
                 connectedDevice = device
                 setStatus(BtStatus.CONNECTED)
@@ -201,7 +207,7 @@ class BluetoothManager(private val context: Context) {
 
                 readLoop(sock)
             } catch (e: IOException) {
-                onLog?.invoke("Bluetooth: ошибка подключения — ${e.message}", "err")
+                onLog?.invoke("BT: ${e.message} (запущен ли PhoneWheelPC в режиме Bluetooth?)", "err")
                 setStatus(BtStatus.NOT_CONNECTED)
                 closeSocketQuietly()
             } catch (e: SecurityException) {

@@ -55,6 +55,7 @@ public class BluetoothServer
     public void Stop()
     {
         _cts?.Cancel();
+        Win32Bluetooth.UnregisterSdp();
         SafeClose(_clientSocket); _clientSocket = null;
         SafeClose(_listenSocket); _listenSocket = null;
     }
@@ -66,7 +67,13 @@ public class BluetoothServer
             Socket client;
             try   { client = await _listenSocket.AcceptAsync(token); }
             catch (OperationCanceledException) { break; }
-            catch (Exception ex) { Log?.Invoke($"Accept: {ex.Message}"); break; }
+            catch (Exception ex)
+            {
+                if (token.IsCancellationRequested) break;
+                Log?.Invoke($"Accept: {ex.Message}");
+                await Task.Delay(500);
+                continue;
+            }
 
             SafeClose(_clientSocket);
             _clientSocket = client;

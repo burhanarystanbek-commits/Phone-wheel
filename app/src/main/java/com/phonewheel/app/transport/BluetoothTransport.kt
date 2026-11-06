@@ -55,7 +55,7 @@ class BluetoothTransport(
         BtStatus.NOT_CONNECTED -> ConnectionState.DISCONNECTED
         BtStatus.SEARCHING, BtStatus.CONNECTING -> ConnectionState.CONNECTING
         BtStatus.CONNECTED -> ConnectionState.CONNECTED
-        BtStatus.CONNECTION_LOST -> ConnectionState.RECONNECTING
+        BtStatus.CONNECTION_LOST -> ConnectionState.ERROR
     }
 
     override fun connect() {
