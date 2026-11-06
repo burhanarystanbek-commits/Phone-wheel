@@ -662,8 +662,20 @@ public class MainForm : Form
 
     private bool _layoutDirty;
 
+    private bool _lastAcquired = true;
+
     private void OnState(WheelState state)
     {
+        var ok = VJoy.EnsureAcquired();
+        if (ok != _lastAcquired)
+        {
+            _lastAcquired = ok;
+            UiThread(() =>
+            {
+                AppendLog(ok ? "vJoy снова захвачен — данные идут в джойстик." : $"vJoy не захвачен: {VJoy.StatusMessage}");
+                RefreshVJoyStatus();
+            });
+        }
         VJoy.SetSteer(state.Steer);
         VJoy.SetThrottle(state.Throttle);
         VJoy.SetBrake(state.Brake);

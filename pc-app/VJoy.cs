@@ -142,23 +142,45 @@ public static class VJoy
         Acquired = false;
     }
 
+    private static long _lastRetryTicks;
+
+    /// <summary>Called for every incoming frame. If vJoy isn't held (another
+    /// copy of the app still owned it, driver was restarted, the device was
+    /// reconfigured…), retry acquiring it at most every 2 s instead of
+    /// silently dropping all input until the app is restarted.</summary>
+    public static bool EnsureAcquired()
+    {
+        if (Acquired) return true;
+        var now = Environment.TickCount64;
+        if (now - _lastRetryTicks < 2000) return false;
+        _lastRetryTicks = now;
+        return Initialize();
+    }
+
+    private static void Axis(int value, int usage)
+    {
+        // SetAxis returns false when we no longer own the device — drop the
+        // flag so EnsureAcquired() re-acquires on the next frame.
+        if (!SetAxis(value, DeviceId, usage)) Acquired = false;
+    }
+
     public static void SetSteer(double minusOneToOne)
     {
         if (!Acquired) return;
         var v = AxisCenter + (int)(minusOneToOne * AxisCenter);
-        SetAxis(Math.Clamp(v, AxisMin, AxisMax), DeviceId, HID_USAGE_X);
+        Axis(Math.Clamp(v, AxisMin, AxisMax), HID_USAGE_X);
     }
 
     public static void SetThrottle(double zeroToOne)
     {
         if (!Acquired) return;
-        SetAxis(Math.Clamp((int)(zeroToOne * AxisMax), AxisMin, AxisMax), DeviceId, HID_USAGE_Y);
+        Axis(Math.Clamp((int)(zeroToOne * AxisMax), AxisMin, AxisMax), HID_USAGE_Y);
     }
 
     public static void SetBrake(double zeroToOne)
     {
         if (!Acquired) return;
-        SetAxis(Math.Clamp((int)(zeroToOne * AxisMax), AxisMin, AxisMax), DeviceId, HID_USAGE_Z);
+        Axis(Math.Clamp((int)(zeroToOne * AxisMax), AxisMin, AxisMax), HID_USAGE_Z);
     }
 
     public static void SetButton(int buttonNumber, bool pressed)
