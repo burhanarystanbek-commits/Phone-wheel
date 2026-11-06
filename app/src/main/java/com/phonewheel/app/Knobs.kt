@@ -84,7 +84,7 @@ class StepKnobView(
         set(v) { field = v; invalidate() }
 
     /** Counter shown on the knob (purely visual — the game keeps the real value). */
-    var level = initialLevel
+    var level = initialLevel.coerceAtLeast(0)
         private set
 
     val minusId get() = "${knobId}_minus"
@@ -131,7 +131,9 @@ class StepKnobView(
     fun toLayout() = KnobLayout(knobId, xFrac, yFrac, sizeFrac, labelText, level)
 
     private fun step(dir: Int) {
-        level += dir
+        // TC / ABS / MAP / BB are never negative: the counter stops at 0.
+        // The "−" press is still sent so the game's own value also bottoms out.
+        level = (level + dir).coerceAtLeast(0)
         pendingSteps += dir
         invalidate()
         onChanged()
