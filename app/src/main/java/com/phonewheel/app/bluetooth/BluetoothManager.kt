@@ -54,6 +54,8 @@ class BluetoothManager(private val context: Context) {
          *  it does not need to be secret, only consistent. */
         val SERVICE_UUID: UUID = UUID.fromString("8ce255c0-200a-11e0-ac64-0800200c9a66")
         const val SERVICE_NAME = "PhoneWheel"
+        /** Must match Win32Bluetooth.FixedChannels on the PC. */
+        val FALLBACK_CHANNELS = intArrayOf(6, 7, 8, 9)
     }
 
     private val systemBtManager =
@@ -198,7 +200,12 @@ class BluetoothManager(private val context: Context) {
                 } catch (first: IOException) {
                     closeSocketQuietly()
                     if (Thread.currentThread().isInterrupted) throw first
-                    remote.createInsecureRfcommSocketToServiceRecord(SERVICE_UUID).also { socket = it; it.connect() }
+                    try {
+                        remote.createInsecureRfcommSocketToServiceRecord(SERVICE_UUID).also { socket = it; it.connect() }
+                    } catch (second: IOException) {
+                        closeSocketQuietly()
+                        connectByChannel(remote) ?: throw second
+                    }
                 }
 
                 connectedDevice = device
@@ -216,6 +223,30 @@ class BluetoothManager(private val context: Context) {
                 closeSocketQuietly()
             }
         }.also { it.isDaemon = true; it.start() }
+    }
+
+    /** Last resort when the PC's SDP record isn't found ("read failed,
+     *  socket might closed"): connect straight to the RFCOMM channels the PC
+     *  app binds to (see Win32Bluetooth.FixedChannels). Uses the hidden but
+     *  long-standing createRfcommSocket(int) API via reflection. */
+    @SuppressLint("MissingPermission")
+    private fun connectByChannel(remote: BluetoothDevice): BluetoothSocket? {
+        for (ch in FALLBACK_CHANNELS) {
+            for (name in arrayOf("createRfcommSocket", "createInsecureRfcommSocket")) {
+                if (Thread.currentThread().isInterrupted) return null
+                try {
+                    val m = remote.javaClass.getMethod(name, Int::class.javaPrimitiveType)
+                    val s = m.invoke(remote, ch) as BluetoothSocket
+                    socket = s
+                    s.connect()
+                    onLog?.invoke("Bluetooth: подключено по каналу $ch", "ok")
+                    return s
+                } catch (_: Exception) {
+                    closeSocketQuietly()
+                }
+            }
+        }
+        return null
     }
 
     @SuppressLint("MissingPermission")

@@ -8,6 +8,8 @@ internal static class Win32Bluetooth
     public const int    AF_BTH         = 32;
     public const int    BTHPROTO_RFCOMM = 0x0003;
     public const uint   BT_PORT_ANY    = 0;
+    /// <summary>Must match FALLBACK_CHANNELS in the Android BluetoothManager.</summary>
+    public static readonly uint[] FixedChannels = { 6, 7, 8, 9 };
 
     // ── SOCKADDR_BTH (ws2bth.h) ─────────────────────────────────────────────
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -103,7 +105,15 @@ internal static class Win32Bluetooth
         //    native bind() leaves .NET's Socket thinking it is unbound, and
         //    then Socket.AcceptAsync throws "You must call Bind first" —
         //    the server never accepted a single Bluetooth client.
-        socket.Bind(new BluetoothEndPoint(0, Guid.Empty, BT_PORT_ANY));
+        // Prefer well-known RFCOMM channels so the phone can connect directly
+        // even when the SDP record is not visible; fall back to "any".
+        var bound = false;
+        foreach (var ch in FixedChannels)
+        {
+            try { socket.Bind(new BluetoothEndPoint(0, Guid.Empty, ch)); bound = true; break; }
+            catch (SocketException) { }
+        }
+        if (!bound) socket.Bind(new BluetoothEndPoint(0, Guid.Empty, BT_PORT_ANY));
 
         // 2. Read back the channel Windows assigned.
         var localAddr = new SOCKADDR_BTH();
