@@ -3,6 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY"/>
 
     <!-- Legacy Bluetooth permissions, required on Android 11 (API 30) and below.
          maxSdkVersion=30 means these are not requested/granted on API 31+, where

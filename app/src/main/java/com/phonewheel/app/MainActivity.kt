@@ -306,6 +306,10 @@ class MainActivity : Activity(), SensorEventListener {
     private var nextKnobId   = 1
     private var editMode = false
     private var settingsDialog: android.app.Dialog? = null
+    private lateinit var ipRow: LinearLayout
+    private lateinit var lockBtn: Button
+    private var raceLock = false
+    private var savedDndFilter = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -330,12 +334,79 @@ class MainActivity : Activity(), SensorEventListener {
         rotSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
     }
 
+    // ── race lock ───────────────────────────────────────────────────────
+    private fun setRaceLock(on: Boolean) {
+        raceLock = on
+        lockBtn.text = if (on) "🔒" else "🔓"
+        lockBtn.background = roundRect(
+            if (on) Color.parseColor("#5b4fe8") else Color.argb(160, 22, 26, 40), dp(20).toFloat())
+        applyImmersive(on)
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        if (on) {
+            // Screen pinning: system blocks Home/Back/Recents and the assistant
+            // long-press until we call stopLockTask(). Android asks once to confirm.
+            try { startLockTask() } catch (_: Exception) {}
+            if (nm.isNotificationPolicyAccessGranted) {
+                savedDndFilter = nm.currentInterruptionFilter
+                nm.setInterruptionFilter(android.app.NotificationManager.INTERRUPTION_FILTER_ALARMS)
+            }
+            Toast.makeText(this, "Режим гонки включён. Удерживай 🔒 чтобы выйти", Toast.LENGTH_LONG).show()
+        } else {
+            try { stopLockTask() } catch (_: Exception) {}
+            if (savedDndFilter > 0 && nm.isNotificationPolicyAccessGranted) nm.setInterruptionFilter(savedDndFilter)
+            savedDndFilter = -1
+            Toast.makeText(this, "Режим гонки выключен", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applyImmersive(on: Boolean) {
+        window.decorView.systemUiVisibility = if (on)
+            (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_FULLSCREEN or
+             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+             View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN)
+        else View.SYSTEM_UI_FLAG_VISIBLE
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && raceLock) applyImmersive(true)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (raceLock) return
+        @Suppress("DEPRECATION") super.onBackPressed()
+    }
+
+    private fun showWifiHelp() {
+        AlertDialog.Builder(this)
+            .setTitle("Подключение по Wi-Fi")
+            .setMessage(
+                "1. Телефон и ПК — в одной Wi-Fi сети (одном роутере). Мобильный интернет на телефоне лучше выключить.\n\n" +
+                "2. На ПК запусти PhoneWheelPC и выбери режим «Wi-Fi».\n\n" +
+                "3. Первый раз нажми на ПК «Настроить доступ» и согласись в окне Windows (UAC) — " +
+                "это открывает порт 27111 в брандмауэре. Строка «Сервер» должна стать зелёной.\n\n" +
+                "4. Узнай IP компьютера: Win+R → cmd → ipconfig → строка «IPv4-адрес» " +
+                "(обычно вида 192.168.x.x).\n\n" +
+                "5. На телефоне: вкладка Wi-Fi → введи этот IP → «Подключить». Статус станет «Подключено».\n\n" +
+                "Не подключается?\n" +
+                "• Проверь, что IP введён без ошибок и ПК не сменил адрес.\n" +
+                "• В Windows сеть должна быть «Частная», а не «Общедоступная».\n" +
+                "• Гостевая сеть роутера часто блокирует связь между устройствами — подключись к основной.\n" +
+                "• Антивирус с собственным брандмауэром может блокировать порт 27111."
+            )
+            .setPositiveButton("Понятно", null)
+            .show()
+    }
+
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(this)
     }
 
     override fun onDestroy() {
+        if (raceLock) setRaceLock(false)
         wantConnected = false
         handler.removeCallbacksAndMessages(null)
         connectionManager.disconnect()
@@ -433,7 +504,7 @@ class MainActivity : Activity(), SensorEventListener {
         root.addView(center, lp(0, MATCH, 2.4f, endMargin = dp(6)))
 
         val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        topRow.addView(View(this), lp(dp(44), dp(24)))  // room for the ⚙ button
+        topRow.addView(View(this), lp(dp(92), dp(24)))  // room for the ⚙ and 🔒 buttons
         statusText = tv("не подключено", 11f, Color.parseColor("#ffbe5f"))
         topRow.addView(statusText, lp(0, WRAP, 1f))
         center.addView(topRow, lp(MATCH, dp(24)))
@@ -461,7 +532,11 @@ class MainActivity : Activity(), SensorEventListener {
             setPadding(dp(10), dp(6), dp(10), dp(6))
             visibility = View.GONE
         }
-        center.addView(ipInput, lp(MATCH, dp(42)).also { it.setMargins(0, dp(4), 0, 0) })
+        ipInput.visibility = View.VISIBLE
+        ipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; visibility = View.GONE }
+        ipRow.addView(ipInput, lp(0, dp(42), 1f, endMargin = dp(4)))
+        ipRow.addView(btn("?", "#7c6fff") { showWifiHelp() }, lp(dp(44), dp(42)))
+        center.addView(ipRow, lp(MATCH, dp(42)).also { it.setMargins(0, dp(4), 0, 0) })
 
         val btRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; visibility = View.GONE }
         btDeviceLabel = tv("Устройство не выбрано", 11f, Color.parseColor("#6b7394"))
@@ -520,6 +595,29 @@ class MainActivity : Activity(), SensorEventListener {
         screen.addView(gear, FrameLayout.LayoutParams(dp(40), dp(40)).apply {
             gravity = Gravity.TOP or Gravity.START
             setMargins(dp(10), dp(10), 0, 0)
+        })
+
+        // Race lock: tap to lock, HOLD 1.5 s to unlock (so it can't be undone by accident).
+        lockBtn = Button(this).apply {
+            text = "🔓"
+            textSize = 16f
+            background = roundRect(Color.argb(160, 22, 26, 40), dp(20).toFloat())
+            setOnClickListener {
+                if (!raceLock) setRaceLock(true)
+                else Toast.makeText(context, "Чтобы разблокировать — удерживай 🔒", Toast.LENGTH_SHORT).show()
+            }
+        }
+        val unlockRunnable = Runnable { if (raceLock) setRaceLock(false) }
+        lockBtn.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> if (raceLock) handler.postDelayed(unlockRunnable, 1500)
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> handler.removeCallbacks(unlockRunnable)
+            }
+            false
+        }
+        screen.addView(lockBtn, FrameLayout.LayoutParams(dp(40), dp(40)).apply {
+            gravity = Gravity.TOP or Gravity.START
+            setMargins(dp(56), dp(10), 0, 0)
         })
 
         editToolbar = LinearLayout(this).apply {
@@ -657,6 +755,23 @@ class MainActivity : Activity(), SensorEventListener {
                 lp(0, dp(42), 1f, endMargin = dp(6)))
         }
         body.addView(knobRow, lp(MATCH, WRAP).also { it.setMargins(0, dp(6), 0, 0) })
+
+        section(body, "Подключение")
+        body.addView(btn("Как подключиться по Wi-Fi", "#7c6fff") { showWifiHelp() }, lp(MATCH, dp(42)))
+
+        section(body, "Режим гонки 🔒")
+        body.addView(tv("Блокирует кнопки «Домой», «Назад», «Недавние», жесты и вызов ассистента " +
+            "(Gemini), прячет панели. Если дать доступ «Не беспокоить» — ещё и уведомления не всплывают. " +
+            "Включается кнопкой 🔒 на главном экране, выключается долгим (1,5 с) нажатием на неё.",
+            11f, Color.parseColor("#6b7394")))
+        body.addView(btn(if (raceLock) "Выключить режим гонки" else "Включить режим гонки",
+            "#22dc82", "#0e2a1e") { settingsDialog?.dismiss(); setRaceLock(!raceLock) }, lp(MATCH, dp(42)))
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        if (!nm.isNotificationPolicyAccessGranted) {
+            body.addView(btn("Разрешить «Не беспокоить» (скрывать уведомления)") {
+                startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+            }, lp(MATCH, dp(42)).also { it.setMargins(0, dp(6), 0, 0) })
+        }
 
         section(body, "Расположение")
         body.addView(btn("Расставить кнопки и колёсики на экране", "#7c6fff") {
@@ -799,7 +914,7 @@ class MainActivity : Activity(), SensorEventListener {
         style(usbBtn, kind == TransportKind.USB)
         style(wifiBtn, kind == TransportKind.WIFI)
         style(btBtn, kind == TransportKind.BLUETOOTH)
-        ipInput.visibility = if (kind == TransportKind.WIFI) View.VISIBLE else View.GONE
+        ipRow.visibility = if (kind == TransportKind.WIFI) View.VISIBLE else View.GONE
         btRowRef?.visibility = if (kind == TransportKind.BLUETOOTH) View.VISIBLE else View.GONE
     }
 
