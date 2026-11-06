@@ -5,6 +5,9 @@ on:
     branches: [ main, master, 'ccr-*' ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,7 +24,22 @@ jobs:
         with:
           gradle-version: '8.4'
 
+      - name: Restore signing key
+        env:
+          KS: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KS" ]; then
+            echo "::warning::SIGNING_KEYSTORE_BASE64 secret not set - APK will NOT install as an update"
+          else
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "SIGNING_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          fi
+
       - name: Build APK
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: gradle assembleDebug --no-daemon
 
       - uses: actions/upload-artifact@v4
@@ -29,3 +47,15 @@ jobs:
           name: PhoneWheel-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk PhoneWheel.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-v2.0.${{ github.run_number }}
+          name: PhoneWheel Android 2.0.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          files: PhoneWheel.apk
+          body: "APK для телефона. Ставится поверх предыдущей версии как обновление."

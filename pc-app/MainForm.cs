@@ -45,7 +45,7 @@ public class MainForm : Form
 
     public MainForm()
     {
-        Text = "PhoneWheel — PC App";
+        Text = $"PhoneWheel — PC App {Updater.CurrentVersion.ToString(3)}";
         Width = 820;
         Height = 1040;
         StartPosition = FormStartPosition.CenterScreen;
@@ -53,7 +53,7 @@ public class MainForm : Form
 
         BuildUi();
 
-        Load += (_, _) => StartUp();
+        Load += (_, _) => { StartUp(); _ = Updater.CheckAsync(this, AppendLog); };
         FormClosing += (_, _) => { _connectionManager.Dispose(); VJoy.Shutdown(); };
     }
 

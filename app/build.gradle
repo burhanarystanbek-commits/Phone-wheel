@@ -9,11 +9,31 @@ android {
         applicationId "com.phonewheel.app"
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName "2.0"
+        // CI passes the run number so every new APK has a higher versionCode
+        // and Android installs it as an update over the previous one.
+        def run = (System.getenv("GITHUB_RUN_NUMBER") ?: "0").toInteger()
+        versionCode 100 + run
+        versionName "2.0.$run"
+    }
+    // Android accepts an update only if it is signed with the SAME key as the
+    // installed app. CI's default debug key is regenerated on every runner,
+    // so the workflow restores a fixed key from repository secrets.
+    def ksPath = System.getenv("SIGNING_KEYSTORE")
+    signingConfigs {
+        if (ksPath) {
+            shared {
+                storeFile file(ksPath)
+                storePassword System.getenv("SIGNING_STORE_PASSWORD")
+                keyAlias System.getenv("SIGNING_KEY_ALIAS")
+                keyPassword System.getenv("SIGNING_KEY_PASSWORD")
+            }
+        }
     }
     buildTypes {
-        debug { debuggable true }
+        debug {
+            debuggable true
+            if (ksPath) signingConfig signingConfigs.shared
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
