@@ -2,7 +2,7 @@ name: Build PC App (exe)
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, 'ccr-*' ]
     paths:
       - 'pc-app/**'
       - '.github/workflows/build-pc-app.yml'

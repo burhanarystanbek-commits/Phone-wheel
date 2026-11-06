@@ -97,7 +97,8 @@ public class MainForm : Form
         {
             if (WebSocketTransport.TryFixUrlAcl())
             {
-                AppendLog("Права настроены, перезапускаю сервер...");
+                AppendLog("Права и брандмауэр настроены, перезапускаю сервер...");
+                _connectionManager.Stop();
                 StartServer();
             }
             else
@@ -632,6 +633,12 @@ public class MainForm : Form
                 + (kind == TransportKind.Usb ? " (через adb reverse)" : " (Wi-Fi, LAN)");
             _serverStatus.ForeColor = Color.SeaGreen;
             _fixAclBtn.Visible = false;
+            if (_connectionManager.WsLocalOnly)
+            {
+                _serverStatus.Text = $"Сервер: порт {WsServer.Port} только для USB — для Wi-Fi нажми 'Настроить доступ' (один раз)";
+                _serverStatus.ForeColor = Color.DarkOrange;
+                _fixAclBtn.Visible = true;
+            }
         }
         else
         {

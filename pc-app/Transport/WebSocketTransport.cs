@@ -30,6 +30,9 @@ public class WebSocketTransport : ITransport
 
     public string? PeerDescription => _peer;
 
+    /// <summary>Server bound to loopback only (no URL ACL) — Wi-Fi can't reach it.</summary>
+    public bool LocalOnly => _server.LocalOnly;
+
     public event Action<ConnectionState>? StateChanged;
     public event Action<WheelState>? StateReceived;
     public event Action<string>? Log;
